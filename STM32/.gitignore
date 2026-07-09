@@ -1,0 +1,28 @@
+# Hardware exports and local documents
+doc/
+/analysis_outputs/
+
+# Keil build outputs
+/MDK-ARM/Demo/
+/MDK-ARM/*.log
+/MDK-ARM/*.lst
+/MDK-ARM/*.bak
+/MDK-ARM/*.uvguix.*
+/MDK-ARM/*.uvoptx
+*.axf
+*.bin
+*.hex
+*.map
+*.o
+*.obj
+*.d
+*.crf
+*.dep
+*.lnp
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

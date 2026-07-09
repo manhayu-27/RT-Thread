@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#083344" />
+    <title>BioScope · 生理信号监测</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2215%22 fill=%22%23123d3c%22/><path d=%22M10 34h12l5-16 10 31 7-21 4 6h7%22 fill=%22none%22 stroke=%22%23f29a89%22 stroke-width=%224%22 stroke-linecap=%22round%22/></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="BioScope 首页">
+          <span class="brand-mark"><svg viewBox="0 0 40 40"><path d="M6 21h7l3-9 6 18 4-12 2 3h6" /></svg></span>
+          <span>BioScope</span>
+        </a>
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item active" data-view="monitor">
+            <svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 4 12 3-8 2 2h3" /></svg><span>实时监测</span>
+          </button>
+          <button class="nav-item" data-view="records">
+            <svg viewBox="0 0 24 24"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5" /></svg><span>采集记录</span>
+          </button>
+          <button class="nav-item" id="settingsButton">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>
+            <span>报警设置</span>
+          </button>
+        </nav>
+        <div class="sidebar-foot"><p>ESP32-S3</p><span>ECG × 1 · EMG × 3</span><div class="firmware">WS · 500 Hz</div></div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="topbar-copy"><p class="eyebrow">LIVE BIOSIGNAL CONSOLE</p><h1 id="pageTitle">实时生理信号</h1><span>精密采集 · 实时分析 · 本地存档</span></div>
+          <div class="top-actions">
+            <div class="clock"><span id="dateText">—</span><strong id="timeText">—</strong></div>
+            <button class="icon-button" id="themeButton" aria-label="切换明暗主题">
+              <svg viewBox="0 0 24 24"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <section id="monitorView" class="view active">
+          <div class="alarm-banner" id="alarmBanner">
+            <svg viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3ZM12 9v5M12 17h.01" /></svg>
+            <div><strong>检测到异常</strong><span id="alarmText">—</span></div>
+            <button id="dismissAlarm">忽略提示</button>
+          </div>
+
+          <section class="connection-panel" aria-label="设备连接">
+            <div class="device-identity">
+              <span class="device-icon"><svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="18" rx="3" /><path d="M9 7h6M10 17h4" /></svg></span>
+              <div>
+                <div class="status-line"><strong>ESP32-S3 生理采集器</strong><span class="status-pill disconnected" id="statusPill"><i></i><span>设备离线</span></span></div>
+                <p id="deviceMeta">尚未连接 · 等待 ESP32 数据</p>
+              </div>
+            </div>
+            <div class="connection-controls">
+              <label class="url-field"><span>WebSocket 地址</span><input id="socketUrl" value="ws://192.168.4.1/ws" spellcheck="false" /></label>
+              <button class="button secondary" id="demoButton"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>模拟数据</button>
+              <button class="button primary" id="connectButton">连接设备</button>
+            </div>
+          </section>
+
+          <section class="task-panel">
+            <div class="task-copy"><span class="section-kicker">ACQUISITION TASK</span><strong id="taskStateText">尚未开始采集</strong><small id="taskDetail">连接设备或启动模拟数据后，可创建采集任务</small></div>
+            <div class="task-fields">
+              <label><span>任务名称</span><input id="taskName" maxlength="80" placeholder="例如：静息状态测试" /></label>
+              <label><span>备注</span><input id="taskNote" maxlength="500" placeholder="选填" /></label>
+              <button class="button secondary" id="pauseButton" disabled>暂停</button>
+              <button class="button record" id="recordButton" disabled><i></i><span>开始采集</span></button>
+            </div>
+          </section>
+
+          <div class="section-heading">
+            <div><span class="section-index">01</span><span class="section-kicker">SYSTEM OVERVIEW</span><h2>核心监测指标</h2></div>
+            <p>生理信号、采集质量与运动状态</p>
+          </div>
+
+          <section class="metric-grid">
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon coral"><svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z" /></svg></span><span class="metric-label">实时心率</span><span class="trend" id="heartState">等待数据</span></div><div class="metric-value"><strong id="heartRate">--</strong><span>BPM</span></div><div class="metric-foot"><span>正常范围</span><strong id="heartRange">50–120 BPM</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon amber"><svg viewBox="0 0 24 24"><path d="M3 12h3l2-6 4 12 3-9 2 3h4" /></svg></span><span class="metric-label">最高肌电 RMS</span><span class="trend" id="emgState">等待数据</span></div><div class="metric-value"><strong id="emgRms">--</strong><span>mV</span></div><div class="load-bar"><i id="emgLoadBar"></i></div><div class="metric-foot"><span>报警阈值</span><strong id="emgThresholdText">0.50 mV</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon blue"><svg viewBox="0 0 24 24"><path d="M4 19V9M9 19V5M14 19v-7M19 19V3" /></svg></span><span class="metric-label">信号质量</span><span class="trend" id="qualityState">等待数据</span></div><div class="metric-value"><strong id="signalQuality">--</strong><span>%</span></div><div class="quality-dots"><i></i><i></i><i></i><i></i><i></i></div><div class="metric-foot"><span>丢包</span><strong id="packetLoss">--</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon green"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg></span><span class="metric-label">采集状态</span><span class="trend" id="recordState">未记录</span></div><div class="metric-value compact"><strong id="sampleRate">--</strong><span>Hz</span></div><div class="metric-foot"><span>任务时长</span><strong id="captureDuration">00:00:00</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon blue"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="m12 8 3 4-3 4M8 12h7" /></svg></span><span class="metric-label">陀螺仪 / 跌倒</span><span class="trend" id="fallState">NORMAL</span></div><div class="gyro-values"><span>X <strong id="gyroX">--</strong></span><span>Y <strong id="gyroY">--</strong></span><span>Z <strong id="gyroZ">--</strong></span></div><div class="metric-foot"><span>单位</span><strong>dps</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon green"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5" /></svg></span><span class="metric-label">大腿姿态 / 温度</span><span class="trend">BMI088</span></div><div class="gyro-values orientation-values"><span>横滚 <strong id="rollValue">--</strong></span><span>俯仰 <strong id="pitchValue">--</strong></span><span>偏航 <strong id="yawValue">--</strong></span><span>温度 <strong id="tempValue">--</strong></span></div><div class="metric-foot"><span>单位</span><strong>deg / C</strong></div></article>
+          </section>
+
+          <div class="section-heading waveform-heading">
+            <div><span class="section-index">02</span><span class="section-kicker">LIVE SIGNALS</span><h2>实时信号波形</h2></div>
+            <p>500 Hz 四通道同步监测</p>
+          </div>
+
+          <section class="wave-card ecg-card" data-channel="ecg">
+            <div class="wave-header"><div><div class="channel-title"><span class="channel-dot ecg"></span><h3>心电信号</h3><span class="channel-tag">ECG · CH1</span></div><p>心脏电活动实时波形</p></div><span class="live-value"><strong id="ecgValue">--</strong> mV</span></div>
+            <div class="wave-stage"><canvas id="ecgCanvas"></canvas><span class="empty-wave-state">等待心电数据</span><span class="time-scale">500 Hz · ±2.0 mV</span></div>
+          </section>
+
+          <div class="emg-grid">
+            <section class="wave-card" data-channel="emg1">
+              <div class="wave-header"><div><div class="channel-title"><span class="channel-dot emg1"></span><h3>肌电信号 1</h3><span class="channel-tag">EMG · CH2</span></div></div><span class="live-value amber-value"><strong id="emg1Value">--</strong> mV</span></div>
+              <div class="wave-stage compact-stage"><canvas id="emg1Canvas"></canvas><span class="empty-wave-state">等待 EMG1 数据</span></div>
+            </section>
+            <section class="wave-card" data-channel="emg2">
+              <div class="wave-header"><div><div class="channel-title"><span class="channel-dot emg2"></span><h3>肌电信号 2</h3><span class="channel-tag">EMG · CH3</span></div></div><span class="live-value blue-value"><strong id="emg2Value">--</strong> mV</span></div>
+              <div class="wave-stage compact-stage"><canvas id="emg2Canvas"></canvas><span class="empty-wave-state">等待 EMG2 数据</span></div>
+            </section>
+            <section class="wave-card" data-channel="emg3">
+              <div class="wave-header"><div><div class="channel-title"><span class="channel-dot emg3"></span><h3>肌电信号 3</h3><span class="channel-tag">EMG · CH4</span></div></div><span class="live-value violet-value"><strong id="emg3Value">--</strong> mV</span></div>
+              <div class="wave-stage compact-stage"><canvas id="emg3Canvas"></canvas><span class="empty-wave-state">等待 EMG3 数据</span></div>
+            </section>
+          </div>
+          <footer><span>仅用于工程调试或教学研究，不用于医学诊断</span><span id="sampleCounter">0 samples</span></footer>
+        </section>
+
+        <section id="recordsView" class="view">
+          <div class="records-toolbar"><div><strong>采集任务</strong><span>CSV 文件保存在本地 data 文件夹</span></div><button class="button secondary" id="refreshTasks">刷新列表</button></div>
+          <div class="records-card">
+            <table><thead><tr><th>任务</th><th>开始时间</th><th>时长</th><th>样本数</th><th>异常样本</th><th>操作</th></tr></thead><tbody id="tasksBody"></tbody></table>
+            <div class="empty-records" id="emptyRecords">暂无采集任务</div>
+          </div>
+          <section class="replay-panel" id="replayPanel">
+            <div class="replay-head"><div><span class="section-kicker">HISTORY REPLAY</span><h2 id="replayTitle">历史回放</h2><p id="replayMeta"></p></div><a class="button primary" id="downloadCsv">导出 CSV</a></div>
+            <div class="replay-slider"><span>开始</span><input type="range" id="replayRange" min="0" max="100" value="0" /><span id="replayPosition">00:00</span></div>
+            <div class="history-grid">
+              <div><strong>ECG</strong><canvas id="historyEcg"></canvas></div>
+              <div><strong>EMG1</strong><canvas id="historyEmg1"></canvas></div>
+              <div><strong>EMG2</strong><canvas id="historyEmg2"></canvas></div>
+              <div><strong>EMG3</strong><canvas id="historyEmg3"></canvas></div>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="settings-form">
+        <div class="dialog-head"><div><span class="section-kicker">ALARM SETTINGS</span><h2>报警阈值</h2></div><button value="cancel" class="dialog-close" aria-label="关闭报警设置">×</button></div>
+        <div class="settings-grid">
+          <label>心率下限（BPM）<input id="hrLow" type="number" min="20" max="200" /></label>
+          <label>心率上限（BPM）<input id="hrHigh" type="number" min="30" max="240" /></label>
+          <label>ECG 幅度上限（mV）<input id="ecgLimit" type="number" min="0.1" step="0.1" /></label>
+          <label>断线判定（ms）<input id="disconnectMs" type="number" min="200" step="100" /></label>
+          <label>EMG1 RMS 上限（mV）<input id="emg1Limit" type="number" min="0.01" step="0.01" /></label>
+          <label>EMG2 RMS 上限（mV）<input id="emg2Limit" type="number" min="0.01" step="0.01" /></label>
+          <label>EMG3 RMS 上限（mV）<input id="emg3Limit" type="number" min="0.01" step="0.01" /></label>
+          <label class="check-label"><input id="ecgRules" type="checkbox" />启用心率不齐与漏搏演示检测</label>
+        </div>
+        <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary" id="saveSettings">保存设置</button></div>
+      </form>
+    </dialog>
+    <div class="toast" id="toast" role="status"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
