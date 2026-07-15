@@ -57,6 +57,18 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define MT6701_SCK_Pin GPIO_PIN_2
+#define MT6701_SCK_GPIO_Port GPIOE
+#define MT6701_CS_Pin GPIO_PIN_4
+#define MT6701_CS_GPIO_Port GPIOE
+#define MT6701_MISO_Pin GPIO_PIN_5
+#define MT6701_MISO_GPIO_Port GPIOE
+#define BMI_GYRO_CS_Pin GPIO_PIN_0
+#define BMI_GYRO_CS_GPIO_Port GPIOA
+#define BMI_ACC_CS_Pin GPIO_PIN_1
+#define BMI_ACC_CS_GPIO_Port GPIOA
+#define RS485_DIR_GPIO_Pin GPIO_PIN_1
+#define RS485_DIR_GPIO_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

@@ -32,4 +32,3 @@ f407yushu\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_pwr_ex.h
 f407yushu\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_spi.h
 f407yushu\main.o: ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
 f407yushu\main.o: ../Mycode/app.h
-f407yushu\main.o: ../Mycode/app_config.h

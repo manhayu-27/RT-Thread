@@ -21,7 +21,10 @@ extern volatile uint32_t g_can2_state_snapshot;
 
 void CAN_Config_1Mbps_Timing(CAN_HandleTypeDef *hcan)
 {
-  /* 涓?angle_v15_0530 涓兘姝ｅ父鎺ユ敹127妯″潡鐨勯厤缃繚鎸佷竴鑷淬€?   * 璇ュ伐绋?SystemClock=160MHz銆丄PB1=40MHz锛?   * 40MHz / 4 / (1 + 7 + 2) = 1Mbps銆?   * 涓嶅啀浣跨敤杩愯鏃惰嚜鍔ㄧ寽娴嬫尝鐗圭巼锛岄伩鍏嶅洜PCLK鍒ゆ柇涓嶄竴鑷村鑷?27鏀朵笉鍒?x010鍚屾甯с€?   */
+  /* CAN2 使用固定时序接收 Node127 数据。
+ * 当前 APB1=42 MHz，Prescaler=3、BS1=8、BS2=5，对应 1 Mbps。
+ * 不在运行时猜测波特率，避免时钟判断差异导致同步帧接收失败。
+ */
   hcan->Init.Prescaler = 4;
   hcan->Init.TimeSeg1 = CAN_BS1_7TQ;
   hcan->Init.TimeSeg2 = CAN_BS2_2TQ;
@@ -59,8 +62,9 @@ uint8_t can1_send_msg(uint32_t id, uint8_t *msg, uint8_t len)
 
 uint8_t can2_send_msg(uint32_t id, uint8_t *msg, uint8_t len)
 {
-    /* 瀹屽叏鍙傝€?angle_v15_0530 鐨?CAN2 鍙戦€佹柟寮忥細
-     * 鏈夌┖閭灏辩洿鎺?HAL_CAN_AddTxMessage锛屽彂閫佸嚱鏁板唴閮ㄤ笉 Stop/Start銆佷笉 Abort 閭锛?     * 閬垮厤鎶婃鍦ㄧ瓑寰?ACK 鐨?0x010 鍚屾甯ф竻鎺夈€?     */
+    /* CAN2 发送直接调用 HAL_CAN_AddTxMessage。
+ * 发送过程中不执行 Stop、Start 或 Abort，避免丢失 0x010 同步帧。
+ */
     CAN_TxHeaderTypeDef tx_header;
     uint32_t tx_mailbox;
     uint32_t t0;
@@ -106,7 +110,9 @@ void USER_CAN1_Start(void) {
 
     can_filter.FilterBank           = 0;
     can_filter.FilterMode           = CAN_FILTERMODE_IDMASK;
-    /* CAN1 鍥哄畾鐢ㄤ簬韪濆叧鑺傜數鏈恒€傝繖閲屼繚鎸佸叏鎺ユ敹锛岀敱杞欢鍙В鏋愯笣鍏宠妭鍙嶉锛?     * 涓嶅啀鍦–AN1涓婂彂閫佹垨瑙ｆ瀽127妯″潡鍚屾/鏁版嵁锛岄伩鍏嶅共鎵拌笣鍏宠妭鎬荤嚎銆?*/
+    /* CAN1 只用于踝关节电机，保持全接收并解析踝关节反馈。
+ * 不在 CAN1 上发送或解析 Node127 数据，避免干扰踝关节总线。
+ */
     can_filter.FilterIdHigh         = 0x0000;
     can_filter.FilterIdLow          = 0x0000;
     can_filter.FilterMaskIdHigh     = 0x0000;
@@ -152,7 +158,9 @@ void USER_CAN2_Start(void) {
         g_can2_error_code = HAL_CAN_GetError(&hcan2) | 0xC2020000U;
         return;
     }
-    /* 鍙傝€?angle_v15_0530锛欳AN2 鍙紑 RX FIFO0 娑堟伅鎸傝捣涓柇銆?     * 涓嶅紑 ERROR/BUSOFF 涓柇锛岄伩鍏嶉敊璇洖璋冩妸 CAN2 Stop/Start 褰卞搷127鍚屾銆?*/
+    /* CAN2 只开启 RX FIFO0 消息挂起中断。
+ * 不开启 ERROR/BUSOFF 中断，避免错误回调重启 CAN2 影响 Node127 同步。
+ */
     if (HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK) {
         g_can2_error_code = HAL_CAN_GetError(&hcan2) | 0xC2030000U;
         return;
@@ -179,7 +187,9 @@ void HAL_CAN_ErrorCallback(CAN_HandleTypeDef *hcan)
         }
     }
     else if (hcan->Instance == CAN2) {
-        /* 鍙傝€?angle_v15_0530锛?27 CAN2閾捐矾涓嶅湪閿欒鍥炶皟閲屽弽澶峉top/Start銆?         * 杩欓噷鍙褰曢敊璇紝涓诲惊鐜户缁寜2ms鍙戦€?x010鍚屾甯с€?*/
+        /* CAN2 错误回调只记录错误，不反复 Stop/Start。
+ * 主循环继续每 2 ms 发送 0x010 同步帧。
+ */
         g_can2_error_code = err;
         if ((err & HAL_CAN_ERROR_BOF) != 0U) {
             g_can2_busoff_count++;

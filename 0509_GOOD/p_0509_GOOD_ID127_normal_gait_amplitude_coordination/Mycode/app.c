@@ -10,27 +10,27 @@
 #include <stdint.h>
 #include <stdarg.h>
 
-/* --- 寮曞叆浣犵殑 CAN 鐢垫満搴曞眰搴?--- */
+/* --- CAN 电机底层驱动 --- */
 #include "can_driver.h"       
 #include "control.h"
 #include "getdata.h"
 #include "ankle_can_config.h"
 
-/* --- 纭欢 ID 涓庡弬鏁伴厤缃?--- */
-#define KNEE_MOTOR_ID              0U        // 鑶濆叧鑺?485 ID
-#define HIP_MOTOR_ID               1U        // 楂嬪叧鑺?485 ID
-#define ANKLE_MOTOR_ID             ANKLE_CAN_NODE_ID  // 韪濆叧鑺?CAN ID锛屽彧淇濈暀 CAN 鑺傜偣 1
+/* --- 硬件 ID 与控制参数 --- */
+#define KNEE_MOTOR_ID              0U        // 膝关节 RS485 ID
+#define HIP_MOTOR_ID               1U        // 髋关节 RS485 ID
+#define ANKLE_MOTOR_ID             ANKLE_CAN_NODE_ID  // 踝关节 CAN ID，仅使用节点 1
 
-/* 銆愰噸瑕佽皟璇曞紑鍏炽€?: 姝ｅ父姝ユ€? 1: 鍥哄畾瑙掑害娴嬭瘯 */
+/* 重要调试开关：0=正常步态，1=固定角度测试 */
 #define MOTOR_TEST_MODE            0
 
 #define CONTROL_PERIOD_MS          10U
 #define PRINT_PERIOD_MS            50U
 #define VOFA_ENABLE                1U
 
-/* ================= 127妯″潡铻嶅悎鎺у埗鍙傛暟 =================
- * 127妯″潡閫氳繃 CAN2(PB5/PB6) 閫氫俊锛涗富鎺ф瘡2ms鍙戦€?x010鍚屾甯э紝
- * 127妯″潡鏀跺埌鍚庡洖浼?ID=127(鑲岀數+闄€铻轰华) 鍜?ID=227(鍔犻€熷害)銆?
+/* ================= Node127 融合控制参数 =================
+ * Node127 通过 CAN2（PB5/PB6）通信；主控每 2 ms 发送一次 0x010 同步帧。
+ * 模块返回 ID=127（肌电和陀螺仪）以及 ID=227（加速度）数据。
  */
 #define NODE127_SYNC_CAN_ID        0x010U
 #define NODE127_SYNC_PERIOD_MS     2U
@@ -41,19 +41,19 @@
 #define NODE127_EMG_ATTACK_ALPHA   0.80f   /* fast envelope attack: human intent should start the gait quickly */
 #define NODE127_EMG_RELEASE_ALPHA  0.10f   /* slower release: filters single-sample dropouts without long motor overrun */
 #define NODE127_EMG_BASELINE_ALPHA 0.0008f
-#define NODE127_EMG_BASELINE_TRACK_RAW 25.0f  /* 闈欐鏃跺厑璁稿熀绾挎參璺熻釜鐨勬渶澶ф紓绉婚噺 */
-#define NODE127_EMG_DEADBAND_RAW   6.0f  /* 鑲岀數姝诲尯锛氭寜0614鏁版嵁鏀惧ぇ锛岄伩鍏嶉潤姝㈠熀绾挎紓绉昏瑙﹀彂 */
-#define NODE127_EMG_FULL_SCALE_RAW 25.0f /* 鑲岀數褰掍竴鍖栨弧閲忕▼锛屾寜127瀹為檯0~2048杈撳嚭閲嶆柊鏍囧畾 */
+#define NODE127_EMG_BASELINE_TRACK_RAW 25.0f  /* 静止时允许基线缓慢跟踪的最大漂移量。 */
+#define NODE127_EMG_DEADBAND_RAW   6.0f  /* 肌电死区：过滤静止状态下的基线漂移，避免误触发。 */
+#define NODE127_EMG_FULL_SCALE_RAW 25.0f /* 肌电归一化满量程，按127实际0~2048输出重新标定 */
 #define NODE127_GYRO_DEADBAND_RAW  250.0f
 #define NODE127_GYRO_FULL_RAW      3500.0f
 #define NODE127_MOTION_HOLD_MS     80U     /* short anti-jitter hold only */
-#define NODE127_PHASE_MIN_SPEED    90.0f   /* 姝ｅ父璧拌矾鐩镐綅閫熷害涓嬮檺锛氱害1.3~3.1s/姝ユ€佸懆鏈燂紝鍙敱鑲岀數寮哄害璋冭妭 */
-#define NODE127_PHASE_MAX_SPEED    205.0f   /* 姝ｅ父璧拌矾鐩镐綅閫熷害涓婇檺锛氬己鑲岀數鏃舵帴杩戣嚜鐒舵棰戯紝浣嗕粛閬垮厤杩囧揩 */
+#define NODE127_PHASE_MIN_SPEED    90.0f   /* 正常步态相位速度下限，由肌电强度调节。 */
+#define NODE127_PHASE_MAX_SPEED    205.0f   /* 正常步态相位速度上限，防止步态运行过快。 */
 #define NODE127_GAIT_SCALE         1.0f
-#define NODE127_CALIB_MS            300U     /* 涓婄數鍚庨噰闆?27闈欐闆跺亸锛屾湡闂翠笁涓數鏈哄彧淇濇寔 */
-#define NODE127_MOVE_ON_GYRO_NORM   0.12f     /* 闄€铻轰华涓嶅啀鍗曠嫭瑙﹀彂锛屽彧鍙備笌杩愬姩寮哄害 */
-#define NODE127_MOVE_ON_EMG_NORM    0.170f    /* 鑲岀數涓昏Е鍙戦槇鍊硷細鏄庢樉鍙戝姏鎵嶈繘鍏ユ鎬?*/
-#define NODE127_STOP_GYRO_NORM      0.030f    /* 鍋滄鏃朵富瑕佺湅鑲岀數锛岄檧铻轰华鍙仛杈呭姪鏄剧ず */
+#define NODE127_CALIB_MS            300U     /* 上电后采集 Node127 静止零偏，校准期间三个电机只保持。 */
+#define NODE127_MOVE_ON_GYRO_NORM   0.12f     /* 陀螺仪不单独触发运动，只参与运动强度计算。 */
+#define NODE127_MOVE_ON_EMG_NORM    0.170f    /* 肌电运动触发阈值，达到后才进入运动状态。 */
+#define NODE127_STOP_GYRO_NORM      0.030f    /* 停止时主要依据肌电，陀螺仪仅作为辅助量。 */
 #define NODE127_STOP_EMG_NORM       0.060f
 #define NODE127_STOP_CONFIRM_MS     220U
 #define NODE127_FAST_STOP_CONFIRM_MS 120U
@@ -68,26 +68,26 @@
 #define NODE124_EMG_START_RAW      14.0f
 #define NODE124_EMG_KEEP_RAW       10.0f
 
-/* =============== 涓夊叧鑺傚崗璋冧笌骞呭害闄愬埗鍙傛暟 ===============
- * 鍙傝€冧汉浣撴鎬佹枃鐚殑鍋氭硶锛氶珛/鑶?韪濅笉鍚勮嚜鐙珛璺戯紝鑰屾槸鍏辩敤涓€涓?gait phase锛?
- * 127鑲岀數鍙喅瀹氭槸鍚﹀厑璁歌蛋璺紝鑲岀數/闄€铻轰华寮哄害鍐冲畾鐩镐綅閫熷害鍜屽箙搴︺€?
- * 涓婄數/棣栨鍚姩鏃舵墍鏈夊叧鑺傜洰鏍囦粠0鐩稿瑙掑紑濮嬶紝閬垮厤楂嬪叧鑺備竴鍚姩灏辫烦鍒版洸绾跨殑23搴︺€?
+/* =============== 三关节协调与幅度限制参数 ===============
+ * 髋、膝、踝共用同一个步态相位，不分别独立运行。
+ * Node127 肌电决定是否运动，肌电和陀螺仪强度决定相位速度与幅值。
+ * 所有关节从上电当前位置开始，避免首次启动时目标角度突然跳变。
  */
-#define GAIT_AMP_MIN_SCALE          0.35f    /* 鍒氬惎鍔ㄦ椂閲囩敤绾?5%姝ｅ父姝ユ€佸箙搴︼紝閬垮厤绐佺劧璺冲彉 */
-#define GAIT_AMP_MAX_SCALE          1.00f    /* 鏈€澶ф寜姝ｅ父浜轰綋姝ユ€佸箙搴﹁緭鍑猴紝涓嶅啀浜轰负缂╁皬 */
-#define GAIT_AMP_RAMP_UP_PER_S      2.20f    /* 骞呭害娓愬彉锛氱害1~1.5绉掔敱灏忓箙杩囨浮鍒版甯稿箙搴?*/
+#define GAIT_AMP_MIN_SCALE          0.35f    /* 启动时使用 35% 正常步态幅值，避免突然跳变。 */
+#define GAIT_AMP_MAX_SCALE          1.00f    /* 最大输出为正常步态幅值。 */
+#define GAIT_AMP_RAMP_UP_PER_S      2.20f    /* 步态幅值渐变速度，从小幅逐步过渡到正常幅值。 */
 #define GAIT_PHASE_SPEED_LPF_ALPHA  0.32f    /* phase speed low-pass */
 #define GAIT_AMP_DECAY_PER_S        1.60f    /* decay commanded gait amplitude quickly after human intent disappears */
-#define KNEE_JOINT_ANGLE_SCALE      0.92f    /* 鑶濆叧鑺傛甯告鎬佹渶澶х害60掳灞堟洸锛屾ā鏉垮嘲鍊?5掳锛屽彇0.92 */
-#define HIP_JOINT_ANGLE_SCALE       0.85f    /* 楂嬪叧鑺傜害30掳灞堟洸鍒?0掳浼稿睍锛屾€诲箙搴︾害40掳 */
-#define ANKLE_JOINT_ANGLE_SCALE     0.95f    /* 韪濆叧鑺傛寜鎺ヨ繎姝ｅ父姝ユ€佽窎灞?鑳屽眻骞呭害杈撳嚭 */
-#define KNEE_MAX_CMD_SPEED_DEG_S    320.0f   /* 骞呭害鎭㈠鍒版甯稿悗锛岄檺閫熶篃鐩稿簲鎻愰珮锛岄槻姝㈢洰鏍囪窡涓嶄笂鏇茬嚎 */
+#define KNEE_JOINT_ANGLE_SCALE      0.92f    /* 膝关节步态角度缩放系数。 */
+#define HIP_JOINT_ANGLE_SCALE       0.85f    /* 髋关节步态角度缩放系数。 */
+#define ANKLE_JOINT_ANGLE_SCALE     0.95f    /* 踝关节步态角度缩放系数。 */
+#define KNEE_MAX_CMD_SPEED_DEG_S    320.0f   /* 膝关节目标角速度上限，防止目标变化过快。 */
 #define HIP_MAX_CMD_SPEED_DEG_S     240.0f
 
 #define INIT_HOLD_MS               1500U
 #define GAIT_PERIOD_MS             1000U
 
-/* 鐗╃悊杞崲甯搁噺 */
+/* 物理换算常量。 */
 #define DEG_TO_RAD                 0.01745329252f
 #define RAD_TO_DEG                 57.2957795131f
 #define KNEE_REDUCTION_RATIO       6.33f
@@ -95,41 +95,41 @@
 #define ANKLE_WAVE_SCALE           1.0f
 #define ANKLE_TURN_PER_DEG         (ANKLE_OUTPUT_REDUCTION_RATIO / 360.0f)
 
-/* 鐩存帴鎸夊浘涓婄殑鍘熷姝ｈ礋鏇茬嚎杩愬姩锛岄浂鐐瑰彇涓婄數褰撳墠浣嶇疆 */
+/* 按步态曲线的正负方向运动，零点取上电时的当前位置。 */
 #define KNEE_CMD_MIN_DEG           (-5.0f)
 #define KNEE_CMD_MAX_DEG           (66.0f)
 
 #define HIP_CMD_MIN_DEG            (-24.0f)
 #define HIP_CMD_MAX_DEG            (24.0f)
 
-/* 韪濆叧鑺傛洸绾挎寜鍥句腑韪濆叧鑺傛洸绾挎墽琛屻€?
- * 杩欓噷鐨勮搴︽槸鐩稿鈥滀笂鐢垫椂鑴氱殑浣嶇疆鈥濈殑杈撳嚭杞磋搴︼紝
- * 浠ｇ爜浼氳嚜鍔ㄥ噺鍘昏捣濮嬬浉浣嶇殑鏇茬嚎鍊硷紝閬垮厤涓婄數鐬棿鍏堟湞涓€涓柟鍚戦《鍒伴檺浣嶃€?
+/* 踝关节按照步态曲线运行。
+ * 角度是相对于上电时脚部位置的输出轴角度。
+ * 程序会减去起始相位的曲线值，避免上电瞬间冲向限位。
  */
-#define ANKLE_CMD_MIN_DEG          (-22.0f)  /* 姝ｅ父姝ユ€佽笣璺栧眻鍙帴杩?0掳锛岀暀鏈烘浣欓噺 */
-#define ANKLE_CMD_MAX_DEG          (12.0f)   /* 姝ｅ父姝ユ€佽笣鑳屽眻绾?~10掳锛屼繚鐣欏皯閲忎綑閲?*/
+#define ANKLE_CMD_MIN_DEG          (-22.0f)  /* 踝关节跖屈角度下限，保留电机余量。 */
+#define ANKLE_CMD_MAX_DEG          (12.0f)   /* 踝关节背屈角度上限，保留电机余量。 */
 #define ANKLE_GAIT_OFFSET_DEG      (0.0f)
 #define ANKLE_MAX_CMD_SPEED_DEG_S  160.0f
 
-/* 浠庡浘涓鎬?0% 寮€濮嬭窇韪濆叧鑺傛洸绾?*/
+/* 从步态相位 0% 开始运行踝关节曲线。 */
 #define GAIT_START_PHASE_PCT       0.0f
 
 #define KNEE_DIR_SIGN              1.0f
 #define HIP_DIR_SIGN               1.0f
-/* 韪濆叧鑺傛柟鍚戙€傝嫢瀹為檯鍔ㄤ綔涓庢洸绾挎柟鍚戠浉鍙嶏紝鍙敼杩欓噷涓?-1.0f銆?*/
+/* 踝关节方向。如果实际动作相反，将此值改为 -1.0f。 */
 #define ANKLE_CMD_DIR              (1.0f)
 #define ANKLE_FEEDBACK_TIMEOUT_MS  1000U
 #define ANKLE_FEEDBACK_STALE_MS    300U
 #define ANKLE_CLOSED_LOOP_DELAY_MS 120U
 #define ANKLE_START_RAMP_MS        1000U
 
-#define KP_TARGET                  0.52f    /* 姝ｅ父骞呭害涓嬮€傚綋鎻愰珮浣嶇疆鍒氬害锛屼繚璇佽兘璺熶笂姝ユ€佹洸绾?*/
+#define KP_TARGET                  0.52f    /* 正常步态时的位置刚度。 */
 #define KW_TARGET                  0.18f
-#define KP_HOLD_BEFORE_EMG         0.08f    /* 鏈娴嬪埌鑲岀數鍓嶅彧杞讳繚鎸侊紝閬垮厤涓婄數閿佸畾閫犳垚鎶栧姩 */
+#define KP_HOLD_BEFORE_EMG         0.08f    /* 检测到肌电前仅轻度保持，避免上电锁定造成抖动。 */
 #define KW_HOLD_BEFORE_EMG         0.08f
 
-/* --- 绠楁硶鎺у埗鍙傛暟 --- */
-#define PHASE_ADVANCE_PCT          0.0f      /* 涓夊叧鑺傚叡鐢ㄥ悓涓€鐩镐綅锛岄伩鍏嶉珛鑶濇彁鍓嶈€岃笣涓嶅悓姝?*/
+/* --- 算法控制参数 --- */
+#define PHASE_ADVANCE_PCT          0.0f      /* 三个关节共用同一个相位，保证步态同步。 */
 #define POS_SLEW_BASE_RAD_S_INIT   6.0f      
 #define WFF_LPF_ALPHA_INIT         0.18f     
 #define CURVE_TENSION              0.62f
@@ -155,10 +155,9 @@ typedef struct {
     uint8_t is_calibrated;
 } JointController_t;
 
-/* --- 鑶濆叧鑺備笌楂嬪叧鑺傛鎬佹暟鎹?---
- * 璁捐鐩爣锛氭甯告鎬佽繎浼煎箙搴︺€?
- * 鑶濓細鎽嗗姩鏈熷眻鏇插嘲鍊肩害60掳锛涢珛锛氬垵濮嬪眻鏇层€佹敮鎾戞湡浼稿睍銆佹憜鍔ㄦ湡閲嶆柊灞堟洸锛?
- * 浠ｇ爜浼氱粺涓€鍑忓幓 GAIT_START_PHASE_PCT 澶勭殑鏇茬嚎鍊硷紝鍥犳涓変釜鍏宠妭涓嶄細鍦ㄨ倢鐢佃Е鍙戠灛闂磋烦鍒扮粷瀵硅銆?
+/* --- 膝关节与髋关节步态数据 ---
+ * 膝关节在摆动期屈曲，髋关节在支撑期和摆动期使用对应曲线。
+ * 程序会统一减去起始相位的曲线值，避免肌电触发瞬间跳变。
  */
 static const JointCurvePoint_t kKneeCurve[] = {
     {0.0f,   0.0f},
@@ -196,13 +195,10 @@ static const JointCurvePoint_t kHipCurve[] = {
 #define KNEE_POINT_COUNT  ((uint32_t)(sizeof(kKneeCurve) / sizeof(kKneeCurve[0])))
 #define HIP_POINT_COUNT   ((uint32_t)(sizeof(kHipCurve) / sizeof(kHipCurve[0])))
 
-/* --- 鍏ㄥ眬鍙ユ焺瀹氫箟 --- */
-UART_HandleTypeDef huart1; // RS485 鐢垫満涓插彛锛圥A9/PA10锛?
-UART_HandleTypeDef huart2; // 鍏煎璋冭瘯/VOFA 涓插彛锛圥A2/PA3锛宎ngle_v15鍘熷伐绋嬩娇鐢級
-UART_HandleTypeDef huart3; // 璋冭瘯/VOFA 涓插彛锛圥B10/PB11锛岀敤鎴峰浘涓帴鍙ｏ級
-SPI_HandleTypeDef hspi1;   // BMI088 SPI1 (PA5/PA6/PA7)
-extern CAN_HandleTypeDef hcan1; // 浠?can.c 寮曠敤
-extern CAN_HandleTypeDef hcan2; // 127妯″潡 CAN2
+/* --- 全局句柄定义 --- */
+/* Peripheral handles are owned by CubeMX-generated main.c. */
+extern CAN_HandleTypeDef hcan1; // 由 CubeMX 生成的 can.c 提供。
+extern CAN_HandleTypeDef hcan2; // 127模块 CAN2
 
 typedef struct {
     uint8_t accel_chip_id;
@@ -234,11 +230,11 @@ static volatile uint8_t g_ankle_gait_enable = 0U;
 static float g_ankle_cmd_turn_state = 0.0f;
 static uint8_t g_ankle_cmd_turn_state_valid = 0U;
 
-/* 涓婄數闃舵鐮侊細鐢ㄤ簬鍒ゆ柇绋嬪簭鍗″湪鍝竴姝ャ€?*/
+/* 上电阶段码，用于判断程序停在哪一步。 */
 volatile uint32_t g_boot_stage_code = 0U;
 volatile uint32_t g_hardfault_count = 0U;
 
-/* 127妯″潡铻嶅悎鎺у埗鐘舵€侊細鍙127涓嶅姩锛宲hase涓嶆帹杩涳紝涓変釜鍏宠妭淇濇寔涓婁竴鐩爣銆?*/
+/* Node127 运动状态：无运动时不推进相位，三个关节保持上一目标。 */
 static float g_node127_emg_baseline = 0.0f;
 static float g_node127_emg_env = 0.0f;
 static float g_node127_emg_norm = 0.0f;
@@ -253,8 +249,8 @@ static float g_node124_prev_emg_norm = 0.0f;
 static uint32_t g_node124_last_peak_tick = 0U;
 static uint32_t g_node124_ignore_until_tick = 0U;
 static float g_node127_phase_pct = GAIT_START_PHASE_PCT;
-static float g_gait_amp_state = 0.0f;          /* 缁熶竴姝ユ€佸箙搴︾郴鏁帮紝鎵€鏈夊叧鑺傚叡鐢?*/
-static float g_gait_phase_speed_state = 0.0f;  /* 骞虫粦鍚庣殑鐩镐綅閫熷害锛屾墍鏈夊叧鑺傚叡鐢?*/
+static float g_gait_amp_state = 0.0f;          /* 统一的步态幅值系数，供所有关节使用。 */
+static float g_gait_phase_speed_state = 0.0f;  /* 平滑后的步态相位速度，供所有关节使用。 */
 static uint8_t g_node127_first_motion_seen = 0U;
 
 typedef enum {
@@ -320,14 +316,13 @@ static uint8_t Ankle_InitCANPositionMode(uint8_t node_id);
 static uint8_t Ankle_HasFault(uint8_t node_id);
 static void Ankle_HoldCurrent(uint8_t node_id);
 
-/* --- 韪濆叧鑺傛鎬佹彃鍊?--- */
+/* --- 踝关节步态插值 --- */
 static float ankle_wave_raw_from_percent(float gait_percent) {
     static const float gait_key[] = {0.0f, 6.0f, 10.0f, 16.0f, 22.0f, 28.0f, 35.0f, 45.0f, 52.0f, 56.0f, 62.0f, 68.0f, 75.0f, 82.0f, 90.0f, 96.0f, 100.0f};
     /*
-     * 鎺ヨ繎姝ｅ父姝ユ€佺殑韪濆叧鑺傛洸绾匡細
-     * 鏃╂湡鎵块噸杞诲害璺栧眻锛屾敮鎾戜腑鏈熼€愭笎鑳屽眻锛岃宫鍦版湡鏄庢樉璺栧眻锛屾憜鍔ㄦ湡鍥炲埌鎺ヨ繎涓珛浣嶃€?
-     * 鍚庣画浠嶄細鍑忓幓0%鐩镐綅鍊硷紝鍥犳涓婄數/棣栨瑙﹀彂涓嶄細绐佺劧璺宠銆?
-     */
+ * 踝关节步态曲线：承重期轻度跖屈，支撑中期逐渐背屈，蹬地期明显跖屈，
+ * 摆动期回到接近中立位。程序仍会减去 0% 相位值，避免首次触发跳变。
+ */
     static const float ankle_key[] = {-2.0f, -10.0f, -15.0f, -9.0f, -4.0f, 1.0f, 6.0f, 10.0f, 8.0f, 0.0f, -14.0f, -20.0f, -13.0f, -7.0f, -3.0f, -1.0f, -2.0f};
     const uint32_t point_num = (uint32_t)(sizeof(gait_key) / sizeof(gait_key[0]));
     return interp_array_periodic_hermite(gait_key, ankle_key, point_num, gait_percent);
@@ -345,13 +340,7 @@ static float ankle_wave_safe_deg_from_percent(float gait_percent) {
     return clampf_local(cmd_deg, ANKLE_CMD_MIN_DEG, ANKLE_CMD_MAX_DEG);
 }
 
-/* --- 鍑芥暟澹版槑 --- */
-void SystemClock_Config(void);
-void MX_GPIO_Init(void);
-void MX_USART1_UART_Init(void);
-void MX_USART2_UART_Init(void);
-void MX_USART3_UART_Init(void);
-void MX_SPI1_Init(void);
+/* --- 函数声明 --- */
 static void Vofa_SendFrame(const BMI088_t *imu, const MT6701_t *enc);
 static void Diag_SendAlive(uint32_t now, uint32_t stage_code);
 static void Debug_WriteBufAll(const uint8_t *buf, uint16_t len, uint32_t timeout_ms);
@@ -359,13 +348,8 @@ static void Debug_Uart3Printf(const char *fmt, ...);
 static void Debug_Uart3WriteRaw(const char *s);
 static void Node127_SendSyncRequest(void);
 
-/* ================= 缂栬瘧閿欒淇锛氳ˉ鍏ㄦ鎬佹彃鍊笺€侀珛鑶濆叧鑺傛帶鍒躲€丅MI088銆丮T6701鍑芥暟 =================
- * 涔嬪墠 main.c 鍙繚鐣欎簡杩欎簺鍑芥暟鐨勫０鏄庯紝浣嗘病鏈夊疄鐜帮紝Keil 浼氭姤锛?
- *   function "interp_array_periodic_hermite" was referenced but not defined
- *   function "BMI088_Init/Update" was referenced but not defined
- *   function "MT6701_Init/Update" was referenced but not defined
- * 鍚屾椂 Joint_Init / Joint_HandleResponse / Joint_PrepareRunRelative / Joint_PrepareHoldLast
- * 娌℃湁鎻愬墠澹版槑鎴栧疄鐜帮紝瀵艰嚧 #223-D implicit declaration銆?
+/* ================= 运行所需的插值、关节和传感器函数 =================
+ * 这些函数由应用层使用，必须在本文件中提供实现或声明。
  */
 static void MT6701_Select(void)       { HAL_GPIO_WritePin(MT6701_CS_PORT, MT6701_CS_PIN, GPIO_PIN_RESET); }
 static void MT6701_Deselect(void)     { HAL_GPIO_WritePin(MT6701_CS_PORT, MT6701_CS_PIN, GPIO_PIN_SET); }
@@ -572,7 +556,7 @@ static HAL_StatusTypeDef BMI088_Init(BMI088_t *imu)
     BMI088_DeselectAccel();
     HAL_Delay(5);
 
-    /* BMI088鍔犻€熷害璁′笂鐢甸粯璁ゅ湪I2C妯″紡锛岄渶瑕佷竴娆ummy read鍒囧埌SPI銆?*/
+    /* BMI088 上电默认按 I2C 模式工作，需要一次空读切换到 SPI。 */
     (void)BMI088_AccelReadRegs(BMI088_REG_ACCEL_CHIP_ID, &dummy, 1U);
     HAL_Delay(1);
 
@@ -832,17 +816,16 @@ static void Joint_PrepareRunRelative(JointController_t *j, float phase_pct)
     if ((j == NULL) || (j->curve == NULL) || (j->point_count == 0U)) return;
 
     /*
-     * 鍏抽敭淇锛氫汉浣撴鎬佹ā鏉挎槸鈥滅粷瀵规洸绾库€濓紝浣嗙數鏈轰笂鐢甸浂鐐规槸褰撳墠浣嶇疆銆?
-     * 鎵€浠ラ珛/鑶濆懡浠ゅ繀椤诲噺鍘昏捣濮嬬浉浣嶅鐨勬洸绾垮€笺€?
-     * 鍚﹀垯楂嬪叧鑺傚湪0%鐩镐綅浼氫竴鍚姩灏辫烦鍒扮害23掳锛岄€犳垚骞呭害澶с€佷笁鍏宠妭涓嶅崗璋冦€?
-     */
+ * 步态模板是绝对角度曲线，而电机上电零点是当前位置。
+ * 因此髋、膝命令必须减去起始相位的曲线值，避免启动时突然跳变。
+ */
     get_curve_target(j->curve, j->point_count, phase_pct + j->phase_adv_state, &curve_deg);
     get_curve_target(j->curve, j->point_count, GAIT_START_PHASE_PCT + j->phase_adv_state, &zero_deg);
 
     target_deg = (curve_deg - zero_deg) * Joint_GetAngleScale(j) * g_gait_amp_state;
     target_deg = Joint_ClampCurveDeg(j, target_deg);
 
-    /* 鐩爣瑙掗檺閫燂細闃叉鑲岀數绐佺劧鍙樺ぇ鏃剁數鏈轰竴姝ヨ烦寰堝ぇ銆?*/
+    /* 目标角度限速，防止肌电突然增大时电机目标一步跳变。 */
     max_step_deg = Joint_GetMaxCmdSpeedDegS(j) * ((float)CONTROL_PERIOD_MS * 0.001f);
     if (j->traj_started == 0U) {
         j->cmd_pos_state = 0.0f;
@@ -874,16 +857,15 @@ static void Joint_PrepareHoldLast(JointController_t *j)
 
     j->cmd.id = j->motor_id;
     if (j->is_calibrated == 0U) {
-        j->cmd.mode = 0U;      /* 杩樻病鏀跺埌鍥炲寘鏃跺厛涓嶅己琛岄攣浣嶇疆 */
+        j->cmd.mode = 0U;      /* 还没收到回包时先不强行锁位置 */
         return;
     }
 
     if (g_node127_first_motion_seen == 0U) {
         /*
-         * 涓婄數鍚庛€佽倢鐢垫病鏈夋槑鏄惧彉鍖栦箣鍓嶏紝涓嶇粰瀹囨爲鐢垫満涓嬩綅缃棴鐜懡浠ゃ€?
-         * 杩欐牱涓嶄細鍥犱负闆剁偣/鍒氬害/鏇茬嚎鐩爣閫犳垚涓婄數杞诲井鍔ㄤ綔銆?
-         * 鐪熸妫€娴嬪埌鑲岀數涓诲姩鎰忓浘鍚庯紝Joint_PrepareRunRelative() 鎵嶈繘鍏ヤ綅缃帶鍒躲€?
-         */
+ * 上电且肌电没有明显变化前，不给宇树电机发送位置闭环命令。
+ * 检测到主动运动意图后，才进入位置控制。
+ */
         j->cmd.mode = 0U;
         j->cmd.K_P = 0.0f;
         j->cmd.K_W = 0.0f;
@@ -901,7 +883,7 @@ static void Joint_PrepareHoldLast(JointController_t *j)
         j->cmd.Pos = j->center_pos;
         j->traj_started = 1U;
     }
-    /* 宸茬粡璺戣繃鏃朵笉閲嶆柊璁＄畻鐩爣锛屼繚鎸佷笂涓€甯?cmd.Pos銆?*/
+    /* 已经运行过时不重新计算目标，保持上一帧 cmd.Pos。 */
 }
 
 static void Joint_HandleResponse(JointController_t *j, HAL_StatusTypeDef status)
@@ -1003,8 +985,9 @@ static void Node127_SendSyncRequest(void)
     uint8_t st2;
     uint32_t now = HAL_GetTick();
 
-    /* 纭欢鍥哄畾锛欳AN2(PB5/PB6) 鎺ユ敹/瑙﹀彂 127 妯″潡锛孋AN1 鍙帶鍒惰笣鍏宠妭鐢垫満銆?
-     * 鍥犳 0x010 鍚屾甯у彧鍏佽浠?CAN2 鍙戦€侊紝绂佹鍚?CAN1 鍙戦€侊紝閬垮厤骞叉壈韪濆叧鑺傜數鏈烘€荤嚎銆?*/
+    /* CAN2（PB5/PB6）固定连接 Node127，CAN1 固定控制踝关节电机。
+ * 0x010 同步帧只允许从 CAN2 发送，避免干扰踝关节 CAN 总线。
+ */
     st2 = can2_send_msg(NODE127_SYNC_CAN_ID, sync_data, 8U);
     g_node127_sync_last_status = st2;
 
@@ -1020,7 +1003,7 @@ static uint8_t Node127_DataFresh(uint32_t now)
     return ((now - g_node127.gyro_tick) <= NODE127_DATA_TIMEOUT_MS) ? 1U : 0U;
 }
 
-/* 榛樿鐢╕杞翠綔涓轰富杩愬姩杞达紱濡傛灉鏂瑰悜/鐏垫晱搴︿笉瀵癸紝鍚庣画鍙渶瑕佹敼杩欓噷銆?*/
+/* 默认使用 Y 轴作为主要运动轴。 */
 static int16_t Node127_GetPrimaryGyroRaw(void)
 {
     return (int16_t)((float)g_node127.gy - g_node127_gy_bias);
@@ -1074,7 +1057,7 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node127_ctrl_state = NODE127_STATE_CALIB;
 }
 
-/* 127闈欐鏍囧畾锛氬彧鍦ㄦ敹鍒癐D=127鏃剁疮璁★紝娌℃敹鍒板氨涓€鐩翠繚鎸侊紝涓嶈鐢垫満涔卞姩銆?*/
+/* Node127 静止标定只在收到 ID=127 时累计，掉线时保持原状态。 */
 static uint8_t Node127_RunCalibration(uint32_t now)
 {
     if (g_node127_calib_start_tick == 0U) {
@@ -1165,7 +1148,7 @@ static float Node127_EmgNorm(uint32_t now)
     return g_node127_emg_norm;
 }
 
-/* 杩斿洖1琛ㄧず127妫€娴嬪埌浜鸿吙杩愬姩/鑲岀數涓诲姩鎰忓浘锛涜繑鍥?琛ㄧず浜轰笉鍔紝搴斾繚鎸併€?*/
+/* 返回 1 表示检测到腿部运动或主动肌电意图，否则返回 0。 */
 static uint8_t Node127_UpdateMotionControl(uint32_t now)
 {
     float gyro_abs;
@@ -1357,9 +1340,9 @@ static void Ankle_IdleBeforeFirstEmg(uint8_t node_id)
     now = HAL_GetTick();
 
     /*
-     * 涓婄數鍚庢病鏈夋娴嬪埌鏄庢樉鑲岀數鍓嶏紝韪濆叧鑺備笉瑕佷富鍔ㄨ繘鍏ヤ綅缃棴鐜紝
-     * 閬垮厤涓婄數杞诲井鎵句綅缃?鎷夊洖鍒濆鐐广€傝繖閲屼粎璁板綍褰撳墠浣嶇疆浣滀负鍚庣画闆剁偣銆?
-     */
+ * 上电且未检测到明显肌电前，踝关节不主动进入位置闭环。
+ * 只记录当前位置，作为后续控制的初始参考。
+ */
     if (motor_fb_valid[node_id] != 0U) {
         motor[node_id].init_pos = motor[node_id].pos;
         g_ankle_cmd_turn_state = motor[node_id].pos;
@@ -1369,7 +1352,7 @@ static void Ankle_IdleBeforeFirstEmg(uint8_t node_id)
     g_ankle_cmd_deg = 0.0f;
     g_ankle_gait_enable = 0U;
 
-    /* 濡傛灉鍒濆鍖栨椂宸茬粡杩涘叆闂幆锛屽懆鏈熸€ч€€鍥瀒dle锛岀洿鍒扮涓€娆¤倢鐢佃Е鍙戙€?*/
+    /* 如果初始化时已经进入闭环，先回到 idle，等待下一次肌电触发。 */
     if ((now - last_idle_tick[node_id]) >= 500U) {
         last_idle_tick[node_id] = now;
         (void)can_set_axis_state(node_id, 1U);
@@ -1509,50 +1492,39 @@ static uint8_t Ankle_InitCANPositionMode(uint8_t node_id)
     return 1U;
 }
 
+/* Application runtime state. */
+static JointController_t knee;
+static JointController_t hip;
+static BMI088_t imu;
+static MT6701_t enc;
+static uint32_t last_tick;
+static uint32_t last_print;
+static uint32_t run_start_tick;
+static uint32_t last_node127_sync_tick;
+static uint32_t last_diag_tick;
+static uint8_t ankle_can_ready;
 /* ==================================================================
- * MAIN 鎵ц閫昏緫
+ * 应用主循环逻辑
  * ================================================================== */
-void App_Main(void) {
-    /* 閲嶈淇锛氬師宸ョ▼ startup 鍙湁 0x400 鏍堬紝灞€閮ㄥぇ缁撴瀯浣撳鏄撳鑷?HardFault锛?
-     * 鎵€浠ヨ繖浜涜繍琛屽璞℃斁鍒伴潤鎬佸尯锛屼笉鍐嶅崰鐢ㄦ爤銆?*/
-    static JointController_t knee, hip;
-    static BMI088_t imu;
-    static MT6701_t enc;
-    uint32_t last_tick, last_print, run_start_tick;
-    uint32_t last_node127_sync_tick;
-    uint32_t last_diag_tick;
-    uint8_t ankle_can_ready;
+void App_Init(void) {
+    /*
+ * 大型运行状态放在静态区，避免占用栈空间导致 HardFault。
+ */
 
-    g_boot_stage_code = 1U;
-    HAL_Init();
-    g_boot_stage_code = 2U;
-    SystemClock_Config();
-    g_boot_stage_code = 3U; 
     memset(&imu, 0, sizeof(imu));
     memset(&enc, 0, sizeof(enc));
-    MX_GPIO_Init();
-    g_boot_stage_code = 4U;
-    MX_USART3_UART_Init();
-    MX_USART2_UART_Init();
     g_boot_stage_code = 5U;
     Debug_Uart3WriteRaw("BOOT0: debug alive on USART3 PB10 and USART2 PA2, 115200, 8N1\r\n");
     Debug_Uart3Printf("BOOT1: SYSCLK=%lu PCLK1=%lu PCLK2=%lu\r\n", (unsigned long)SystemCoreClock, (unsigned long)HAL_RCC_GetPCLK1Freq(), (unsigned long)HAL_RCC_GetPCLK2Freq());
-    MX_USART1_UART_Init();
-    g_boot_stage_code = 6U;
-    MX_SPI1_Init();
-    g_boot_stage_code = 7U;
     HAL_Delay(50);
 
-    /* 鍏抽敭淇锛氫笉瑕佹妸绋嬪簭鍗″湪127棰勭儹閲屻€?
-     * 鍏堝垵濮嬪寲 CAN1+CAN2锛屽啀鍒嗗埆鍚姩锛涗富寰幆鍙€氳繃CAN2鎸佺画鍙戦€?x010鍚屾甯с€?
-     * 杩欐牱鍗充娇127娌℃湁鎺ュソ锛孶SART3涔熶細鎸佺画杈撳嚭璇婃柇鏁版嵁銆?*/
-    MX_CAN1_Init();
-    g_boot_stage_code = 8U;
-    MX_CAN2_Init();
-    g_boot_stage_code = 9U;
-    USER_CAN2_Start();   /* 127妯″潡锛欳AN2 PB5/PB6 */
+    /*
+ * 先初始化 CAN1 和 CAN2，再通过 CAN2 持续发送 0x010 同步帧。
+ * 即使 Node127 未连接，USART3 仍会持续输出诊断信息。
+ */
+    USER_CAN2_Start();   /* 127模块：CAN2 PB5/PB6 */
     g_boot_stage_code = 10U;
-    USER_CAN1_Start();   /* 韪濆叧鑺傝タ鏍肩帥鐢垫満锛欳AN1 PB8/PB9 */
+    USER_CAN1_Start();   /* 踝关节西格玛电机：CAN1 PB8/PB9 */
     g_boot_stage_code = 11U;
     Debug_Uart3Printf("BOOT: CAN1/CAN2 start called, no blocking warmup. USART3 alive.\r\n");
     g_node127_warmup_done = 1U;
@@ -1567,18 +1539,18 @@ void App_Main(void) {
 
     HAL_Delay(50);
 
-    /* 韪濆叧鑺傚彧鏈変竴涓?CAN 鐢垫満锛氫笉瑕佸啀瀵?0~3 鍙疯妭鐐规壒閲忓垵濮嬪寲锛?
-     * 涔熶笉瑕佸涓嶅瓨鍦ㄧ殑 CAN ID 鍙戦€侀棴鐜懡浠ゃ€?
-     */
+    /*
+ * 踝关节只有一个 CAN 电机，不向不存在的节点批量发送命令。
+ */
     ankle_can_ready = Ankle_InitCANPositionMode(ANKLE_MOTOR_ID);
     g_boot_stage_code = 14U;
     Debug_Uart3Printf("BOOT: ankle init result=%u, ready=%u\r\n", (unsigned int)g_ankle_init_result, (unsigned int)ankle_can_ready);
 
-    // 缁熶竴鍒濆鍖栫粨鏋勪綋
+    // 统一初始化运行状态。
     Joint_Init(&knee, "knee", KNEE_MOTOR_ID, KNEE_DIR_SIGN, KNEE_REDUCTION_RATIO, kKneeCurve, KNEE_POINT_COUNT);
     Joint_Init(&hip, "hip", HIP_MOTOR_ID, HIP_DIR_SIGN, HIP_REDUCTION_RATIO, kHipCurve, HIP_POINT_COUNT);
 
-    /* 127鎺у埗閫昏緫浠庨潤姝㈡爣瀹氬紑濮嬶細鏍囧畾瀹屾垚鍓嶃€?27鎺夌嚎鏃讹紝涓変釜鐢垫満閮藉彧淇濇寔銆?*/
+    /* Node127 从静止标定开始；标定完成或数据掉线时，三个电机只保持。 */
     Node127_ResetCalibration(HAL_GetTick());
 
     run_start_tick = HAL_GetTick();
@@ -1587,156 +1559,157 @@ void App_Main(void) {
     last_node127_sync_tick = run_start_tick;
     last_diag_tick = 0U;
 
-    while (1) {
-        uint32_t now = HAL_GetTick();
-        uint32_t elapsed = now - run_start_tick;
+}
 
-        /* USART3鐢熷懡淇″彿锛氬嵆浣?27/CAN/鐢垫満閮芥病鏈夋帴濂斤紝涔熷繀椤绘寔缁緭鍑恒€?*/
-        if ((now - last_diag_tick) >= 200U) {
-            last_diag_tick = now;
-            Diag_SendAlive(now, 20U);
-        }
+void App_RunOnce(void) {
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed = now - run_start_tick;
 
-        /* CAN2鎺ユ敹閲囩敤涓柇+杞鍙屼繚闄╋紝闃叉NVIC/杩囨护鍣ㄥ紓甯稿鑷?27鏁版嵁杩涗笉鏉ャ€?*/
-        USER_CAN_PollRx();
+    /* USART3 生命信号：即使传感器或电机未连接，也持续输出诊断信息。 */
+    if ((now - last_diag_tick) >= 200U) {
+        last_diag_tick = now;
+        Diag_SendAlive(now, 20U);
+    }
 
-        if ((now - last_node127_sync_tick) >= NODE127_SYNC_PERIOD_MS) {
-            last_node127_sync_tick = now;
-            Node127_SendSyncRequest();
-        }
-        if (now - last_tick >= CONTROL_PERIOD_MS) {
-            last_tick = now;
+    /* CAN2 同时使用中断和主循环轮询，避免接收链路异常导致数据丢失。 */
+    USER_CAN_PollRx();
 
-            if (elapsed < INIT_HOLD_MS) {
-                /* 涓婄數鍓?.5绉掑彧鍋氶浂鐐硅褰?褰撳墠浣嶇疆淇濇寔锛岀粷涓嶈窇鏇茬嚎銆?*/
-                knee.cmd.mode = 0U;
+    if ((now - last_node127_sync_tick) >= NODE127_SYNC_PERIOD_MS) {
+        last_node127_sync_tick = now;
+        Node127_SendSyncRequest();
+    }
+    if (now - last_tick >= CONTROL_PERIOD_MS) {
+        last_tick = now;
+
+        if (elapsed < INIT_HOLD_MS) {
+            /* 上电前 1.5 s 只保持当前位置，不运行步态曲线。 */
+            knee.cmd.mode = 0U;
+            Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
+
+            hip.cmd.mode = 0U;
+            Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+
+            if (ankle_can_ready != 0U) {
+                /* 上电静止阶段只记录当前位置，不让踝关节主动闭环动作。 */
+                Ankle_IdleBeforeFirstEmg(ANKLE_MOTOR_ID);
+            }
+        } else {
+            uint8_t node127_motion = Node127_UpdateMotionControl(now);
+
+            if (node127_motion != 0U) {
+                float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
+                float amp_target;
+                float amp_step;
+                float phase_speed_target;
+                float motion_drive;
+
+                /*
+ * 三关节协调核心：
+ * 1. 髋、膝、踝共用 g_node127_phase_pct，保证相位一致。
+ * 2. 共用 g_gait_amp_state，控制步态幅值平滑变化。
+ * 3. 各关节曲线保留人体步态中的先后关系。
+ */
+                motion_drive = clampf_local((0.75f * g_node127_intent_level) + (0.25f * g_node127_motion_level), 0.0f, 1.0f);
+                amp_target = GAIT_AMP_MIN_SCALE +
+                    (GAIT_AMP_MAX_SCALE - GAIT_AMP_MIN_SCALE) * motion_drive;
+                amp_target = clampf_local(amp_target, GAIT_AMP_MIN_SCALE, GAIT_AMP_MAX_SCALE);
+                amp_step = GAIT_AMP_RAMP_UP_PER_S * dt_s;
+                if (g_gait_amp_state < amp_target) {
+                    g_gait_amp_state += amp_step;
+                    if (g_gait_amp_state > amp_target) g_gait_amp_state = amp_target;
+                } else {
+                    /* 运动意图仍存在但强度降低时，步态幅值逐渐减小，避免突降。 */
+                    g_gait_amp_state -= (0.35f * amp_step);
+                    if (g_gait_amp_state < amp_target) g_gait_amp_state = amp_target;
+                }
+
+                phase_speed_target = NODE127_PHASE_MIN_SPEED +
+                    (NODE127_PHASE_MAX_SPEED - NODE127_PHASE_MIN_SPEED) * motion_drive;
+                if (g_gait_phase_speed_state <= 1.0f) {
+                    g_gait_phase_speed_state = phase_speed_target;
+                } else {
+                    g_gait_phase_speed_state += GAIT_PHASE_SPEED_LPF_ALPHA *
+                        (phase_speed_target - g_gait_phase_speed_state);
+                }
+                g_node127_phase_pct = wrap_phase_pct(g_node127_phase_pct + g_gait_phase_speed_state * dt_s);
+
+                Joint_PrepareRunRelative(&knee, g_node127_phase_pct);
                 Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
 
-                hip.cmd.mode = 0U;
+                Joint_PrepareRunRelative(&hip, g_node127_phase_pct);
                 Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+            } else {
+                {
+                    float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
+                    float amp_decay_step = GAIT_AMP_DECAY_PER_S * dt_s;
+                    if (g_gait_amp_state > amp_decay_step) g_gait_amp_state -= amp_decay_step;
+                    else g_gait_amp_state = 0.0f;
+                    g_gait_phase_speed_state *= 0.75f;
+                    if (g_gait_phase_speed_state < 1.0f) g_gait_phase_speed_state = 0.0f;
+                }
+                /* 127 data lost or human stopped: phase freezes; gait drive decays. */
+                Joint_PrepareHoldLast(&knee);
+                Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
 
-                if (ankle_can_ready != 0U) {
-                    /* 涓婄數闈欐闃舵锛氬彧璁板綍褰撳墠浣嶇疆锛屼笉璁╄笣鍏宠妭涓诲姩闂幆鍔ㄤ綔銆?*/
+                Joint_PrepareHoldLast(&hip);
+                Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+            }
+
+            if (ankle_can_ready != 0U) {
+                if (Ankle_HasFault(ANKLE_MOTOR_ID) != 0U) {
+                    (void)can_set_axis_state(ANKLE_MOTOR_ID, 1U);
+                    ankle_can_ready = 0U;
+                }
+                else if ((g_node127_first_motion_seen == 0U) && (node127_motion == 0U)) {
+                    /* 肌电未明显变化前，踝关节保持 idle，不主动寻找位置。 */
                     Ankle_IdleBeforeFirstEmg(ANKLE_MOTOR_ID);
                 }
-            } else {
-                uint8_t node127_motion = Node127_UpdateMotionControl(now);
-
-                if (node127_motion != 0U) {
-                    float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
-                    float amp_target;
-                    float amp_step;
-                    float phase_speed_target;
-                    float motion_drive;
-
-                    /*
-                     * 涓夊叧鑺傚崗璋冩牳蹇冿細
-                     * 1) 楂嬨€佽啙銆佽笣鍏辩敤鍚屼竴涓?g_node127_phase_pct锛屼繚璇佺浉浣嶄竴鑷达紱
-                     * 2) 鍏辩敤 g_gait_amp_state 鍋氬箙搴︽笎鍙橈紝鏈€缁堝厑璁歌揪鍒版甯镐汉璧拌矾骞呭害锛?
-                     * 3) 鏇茬嚎鏈韩鍖呭惈鍚勫叧鑺傚湪姝ユ€佷腑鐨勫厛鍚庡叧绯伙紝涓嶅啀璁╂瘡涓數鏈哄悇鑷嫭绔嬭窇銆?
-                     */
-                    motion_drive = clampf_local((0.75f * g_node127_intent_level) + (0.25f * g_node127_motion_level), 0.0f, 1.0f);
-                    amp_target = GAIT_AMP_MIN_SCALE +
-                        (GAIT_AMP_MAX_SCALE - GAIT_AMP_MIN_SCALE) * motion_drive;
-                    amp_target = clampf_local(amp_target, GAIT_AMP_MIN_SCALE, GAIT_AMP_MAX_SCALE);
-                    amp_step = GAIT_AMP_RAMP_UP_PER_S * dt_s;
-                    if (g_gait_amp_state < amp_target) {
-                        g_gait_amp_state += amp_step;
-                        if (g_gait_amp_state > amp_target) g_gait_amp_state = amp_target;
-                    } else {
-                        /* 浜轰粛鍦ㄥ彂鍔涗絾寮哄害鍙樺皬锛屽箙搴︽參鎱㈠彉灏忥紝閬垮厤绐侀檷銆?*/
-                        g_gait_amp_state -= (0.35f * amp_step);
-                        if (g_gait_amp_state < amp_target) g_gait_amp_state = amp_target;
-                    }
-
-                    phase_speed_target = NODE127_PHASE_MIN_SPEED +
-                        (NODE127_PHASE_MAX_SPEED - NODE127_PHASE_MIN_SPEED) * motion_drive;
-                    if (g_gait_phase_speed_state <= 1.0f) {
-                        g_gait_phase_speed_state = phase_speed_target;
-                    } else {
-                        g_gait_phase_speed_state += GAIT_PHASE_SPEED_LPF_ALPHA *
-                            (phase_speed_target - g_gait_phase_speed_state);
-                    }
-                    g_node127_phase_pct = wrap_phase_pct(g_node127_phase_pct + g_gait_phase_speed_state * dt_s);
-
-                    Joint_PrepareRunRelative(&knee, g_node127_phase_pct);
-                    Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
-
-                    Joint_PrepareRunRelative(&hip, g_node127_phase_pct);
-                    Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
-                } else {
-                    {
-                        float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
-                        float amp_decay_step = GAIT_AMP_DECAY_PER_S * dt_s;
-                        if (g_gait_amp_state > amp_decay_step) g_gait_amp_state -= amp_decay_step;
-                        else g_gait_amp_state = 0.0f;
-                        g_gait_phase_speed_state *= 0.75f;
-                        if (g_gait_phase_speed_state < 1.0f) g_gait_phase_speed_state = 0.0f;
-                    }
-                    /* 127 data lost or human stopped: phase freezes; gait drive decays. */
-                    Joint_PrepareHoldLast(&knee);
-                    Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
-
-                    Joint_PrepareHoldLast(&hip);
-                    Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+                else if ((ANKLE_HOLD_ONLY_TEST != 0U) || (elapsed < (INIT_HOLD_MS + ANKLE_PRE_GAIT_HOLD_MS))) {
+                    Ankle_HoldCurrent(ANKLE_MOTOR_ID);
                 }
+                else if ((motor_hb_valid[ANKLE_MOTOR_ID] != 0U) && (motor_axis_state[ANKLE_MOTOR_ID] != 8U)) {
+                    Ankle_HoldCurrent(ANKLE_MOTOR_ID);
+                }
+                else if (node127_motion != 0U) {
+                    float ankle_curve_deg = ankle_wave_safe_deg_from_percent(g_node127_phase_pct);
+                    float ankle_curve_zero_deg = ankle_wave_safe_deg_from_percent(GAIT_START_PHASE_PCT);
+                    float ankle_deg = NODE127_GAIT_SCALE * ANKLE_JOINT_ANGLE_SCALE * g_gait_amp_state * (ankle_curve_deg - ankle_curve_zero_deg);
+                    float ankle_turn_target = motor[ANKLE_MOTOR_ID].init_pos + ANKLE_CMD_DIR * (ankle_deg * ANKLE_TURN_PER_DEG);
+                    float ankle_turn;
+                    float max_step_turn = ANKLE_MAX_CMD_SPEED_DEG_S * ANKLE_TURN_PER_DEG * ((float)CONTROL_PERIOD_MS / 1000.0f);
 
-                if (ankle_can_ready != 0U) {
-                    if (Ankle_HasFault(ANKLE_MOTOR_ID) != 0U) {
-                        (void)can_set_axis_state(ANKLE_MOTOR_ID, 1U);
-                        ankle_can_ready = 0U;
+                    if (g_ankle_cmd_turn_state_valid == 0U) {
+                        g_ankle_cmd_turn_state = motor[ANKLE_MOTOR_ID].init_pos;
+                        g_ankle_cmd_turn_state_valid = 1U;
                     }
-                    else if ((g_node127_first_motion_seen == 0U) && (node127_motion == 0U)) {
-                        /* 鑲岀數娌℃湁鏄庢樉鍙樺寲鍓嶏紝韪濆叧鑺備繚鎸乮dle锛屼笉涓诲姩鎵句綅缃€?*/
-                        Ankle_IdleBeforeFirstEmg(ANKLE_MOTOR_ID);
-                    }
-                    else if ((ANKLE_HOLD_ONLY_TEST != 0U) || (elapsed < (INIT_HOLD_MS + ANKLE_PRE_GAIT_HOLD_MS))) {
-                        Ankle_HoldCurrent(ANKLE_MOTOR_ID);
-                    }
-                    else if ((motor_hb_valid[ANKLE_MOTOR_ID] != 0U) && (motor_axis_state[ANKLE_MOTOR_ID] != 8U)) {
-                        Ankle_HoldCurrent(ANKLE_MOTOR_ID);
-                    }
-                    else if (node127_motion != 0U) {
-                        float ankle_curve_deg = ankle_wave_safe_deg_from_percent(g_node127_phase_pct);
-                        float ankle_curve_zero_deg = ankle_wave_safe_deg_from_percent(GAIT_START_PHASE_PCT);
-                        float ankle_deg = NODE127_GAIT_SCALE * ANKLE_JOINT_ANGLE_SCALE * g_gait_amp_state * (ankle_curve_deg - ankle_curve_zero_deg);
-                        float ankle_turn_target = motor[ANKLE_MOTOR_ID].init_pos + ANKLE_CMD_DIR * (ankle_deg * ANKLE_TURN_PER_DEG);
-                        float ankle_turn;
-                        float max_step_turn = ANKLE_MAX_CMD_SPEED_DEG_S * ANKLE_TURN_PER_DEG * ((float)CONTROL_PERIOD_MS / 1000.0f);
 
-                        if (g_ankle_cmd_turn_state_valid == 0U) {
-                            g_ankle_cmd_turn_state = motor[ANKLE_MOTOR_ID].init_pos;
-                            g_ankle_cmd_turn_state_valid = 1U;
-                        }
-
-                        if (ankle_turn_target > (g_ankle_cmd_turn_state + max_step_turn)) {
-                            ankle_turn = g_ankle_cmd_turn_state + max_step_turn;
-                        } else if (ankle_turn_target < (g_ankle_cmd_turn_state - max_step_turn)) {
-                            ankle_turn = g_ankle_cmd_turn_state - max_step_turn;
-                        } else {
-                            ankle_turn = ankle_turn_target;
-                        }
-                        g_ankle_cmd_turn_state = ankle_turn;
-
-                        g_ankle_cmd_deg = ankle_deg;
-                        g_ankle_cmd_turn = ankle_turn;
-                        g_ankle_gait_enable = 1U;
-                        (void)can_set_input_pos(ANKLE_MOTOR_ID, ankle_turn, 0, 0);
+                    if (ankle_turn_target > (g_ankle_cmd_turn_state + max_step_turn)) {
+                        ankle_turn = g_ankle_cmd_turn_state + max_step_turn;
+                    } else if (ankle_turn_target < (g_ankle_cmd_turn_state - max_step_turn)) {
+                        ankle_turn = g_ankle_cmd_turn_state - max_step_turn;
+                    } else {
+                        ankle_turn = ankle_turn_target;
                     }
-                    else {
-                        /* 浜轰笉鍔ㄦ椂韪濆叧鑺備繚鎸佷笂涓€鐩爣锛屼笉鍥炲垵濮嬩綅銆佷笉缁х画璺戙€?*/
-                        Ankle_HoldLastTarget(ANKLE_MOTOR_ID);
-                    }
+                    g_ankle_cmd_turn_state = ankle_turn;
+
+                    g_ankle_cmd_deg = ankle_deg;
+                    g_ankle_cmd_turn = ankle_turn;
+                    g_ankle_gait_enable = 1U;
+                    (void)can_set_input_pos(ANKLE_MOTOR_ID, ankle_turn, 0, 0);
+                }
+                else {
+                    /* 无运动时保持上一目标，不回初始位置，也不继续运行曲线。 */
+                    Ankle_HoldLastTarget(ANKLE_MOTOR_ID);
                 }
             }
+        }
 
-            if (now - last_print >= PRINT_PERIOD_MS) {
-                last_print = now;
+        if (now - last_print >= PRINT_PERIOD_MS) {
+            last_print = now;
 
-                (void)BMI088_Update(&imu);
-                (void)MT6701_Update(&enc);
-                Vofa_SendFrame(&imu, &enc);
-            }
+            (void)BMI088_Update(&imu);
+            (void)MT6701_Update(&enc);
+            Vofa_SendFrame(&imu, &enc);
         }
     }
 }
@@ -1768,10 +1741,10 @@ static void Vofa_SendFrame(const BMI088_t *imu, const MT6701_t *enc) {
         enc_deg_milli = (long)(enc->angle_deg * 1000.0f);
     }
 
-    /* 9002 涓虹函鏁存暟 ASCII 璇婃柇甯э紝涓嶄娇鐢?printf 娴偣鏍煎紡銆?
-     * 涔嬪墠 %.3f/%.4f 鍦?Keil 鏈紑鍚?float printf 鎴栨爤杈冨皬鏃跺彲鑳藉鑷村紓甯革紝
-     * 浠庤€屽嚭鐜扳€淰OFA 瀹屽叏娌℃湁鏁版嵁鈥濄€?
-     */
+    /*
+ * 9002 是纯整数 ASCII 诊断帧，避免依赖 Keil 的浮点 printf 支持。
+ * 这样可以减少栈占用，并保证 VOFA 始终有输出。
+ */
     len = snprintf(tx, sizeof(tx),
                    "9002,%lu,%ld,%ld,%ld,%u,%ld,%u,%u,%u,%u,%ld,%ld,%ld,%ld,%u,%u,%lu,%u,%u,%u,%lu,%lu,%d,%d,%d,%d,%d,%d,%u,%ld,%ld,%ld,%u,%lu,%lu,%lu,%lu,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%ld,%ld,%lu,%lu,%lu,%d,%ld,%ld\r\n",
                    (unsigned long)now,
@@ -1840,14 +1813,12 @@ static void Vofa_SendFrame(const BMI088_t *imu, const MT6701_t *enc) {
     }
 }
 
-/* --- 搴曞眰纭欢閰嶇疆 (鍩轰簬 160MHz) --- */
-void Error_Handler(void) {
-    /* 涓嶅啀鏃犲０姝绘満锛氬鏋淯SART3宸茬粡鍒濆鍖栵紝鎸佺画鍙戦敊璇爣璁般€?*/
-    while (1) {
-        if (huart3.Instance == USART3) {
-            const char *e = "9999,ERROR_HANDLER\r\n";
-            Debug_WriteBufAll((uint8_t *)e, (uint16_t)strlen(e), 50U);
-        }
-        HAL_Delay(200);
+/* --- 底层硬件配置（基于 160 MHz） --- */
+void App_ErrorHandlerStep(void)
+{
+    if (huart3.Instance == USART3) {
+        const char *error_text = "9999,ERROR_HANDLER\\r\\n";
+        Debug_WriteBufAll((uint8_t *)error_text, (uint16_t)strlen(error_text), 50U);
     }
+    HAL_Delay(200);
 }

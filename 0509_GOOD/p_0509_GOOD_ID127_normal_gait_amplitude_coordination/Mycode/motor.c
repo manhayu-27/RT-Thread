@@ -3,12 +3,7 @@
 #include "motor.h"
 #include "can_driver.h"
 
-/**
- * @brief       CAN_ID
- * @param       node_idڵid
- * @param       cmd_id
- * @retval      can_id
- */
+/* CAN 电机协议说明。 */
 //void motor_init(uint8_t node_id)
 //{
 //	Filtering_location(node_id);
@@ -23,66 +18,38 @@ void motor_init_stop(uint8_t node_id)
 {
 	Close_control_mode(node_id);
 }
-/**
- * CANController Area Networkʶ
- * CANʶCANΨһʶÿϢĴ
- * ͨϽڵIDIDʶ
- *
- * @param node_id ڵIDʾϢķ߻
- * @param cmd_id IDʾϢͻ
- * @return ؼCANʶ
- */
+/* CAN 电机协议说明。 */
 uint32_t calculate_can_id(uint8_t node_id, uint8_t cmd_id)
 {
-// ȷnode_idֻռ6λ
+// CAN 电机协议步骤。
 //	node_id &= 0x3F; // 0x3F == 0011 1111
-// node_id5λΪcmd_idλ
+// CAN 电机协议步骤。
 	return ((uint32_t)node_id << 5) | cmd_id;
 }
-/**
- * ȸתΪ32λ޷
- *
- * ˺ͨ壨unionķʽʵתַƹĳЩֱתơ
- *  float_to_int ͬʱӵһԱ f һ޷Ա iǹͬһڴ档
- *  f ֱֵͨ޷ i ȡڴĶݣӶʵת
- *
- * ע⣺תضϵͳͱܲпֲԡ
- *
- * @param value ȸƱʾתΪ32λ޷
- * @return 32λ޷븡ĶƱʾ
- */
+/* CAN 电机协议说明。 */
 uint32_t float_to_uint32(float value)
 {
-	// һ壬ڸת
+	// CAN 电机协议步骤。
 	union
 	{
 		float f;
 		uint32_t i;
 	} float_to_int;
 
-	// ĸֵĸԱ
+	// CAN 电机协议步骤。
 	float_to_int.f = value;
-	// ع޷ԱĶƱʾ
+	// CAN 电机协议步骤。
 	return float_to_int.i;
 }
 
-/**
- * 32λ޷תΪ
- *
- * ˺һ32λ޷uint32_tΪ룬ͣ reinterpret castΪһfloat
- * תͨ壨unionʵֵģһڴռӵвͬ
- * ʹֱַڴ漶Ͻ½ΪҪֱӷʸڲʾº
- *
- * @param intValue һ32λ޷תΪ
- * @return תĸֵ
- */
+/* CAN 电机协议说明。 */
 float intToFloat(uint32_t intValue)
 {
-	// һͨһԱڴ棬ͬʱЩڴ汻Ա
+	// CAN 电机协议步骤。
 	FloatConverter converter;
-	// ֵ
+	// CAN 电机协议步骤。
 	converter.i = intValue;
-	// عĸ֣⽫ֱӷԭʼڴеĸ
+	// CAN 电机协议步骤。
 	return converter.f;
 }
 
@@ -194,49 +161,36 @@ void clear_errors(uint8_t node_id)
     (void)can_clear_errors(node_id);
 }
 
-/**
- *
- * úȼģʽCAN IDȻͿģʽ
- * ż״̬ƵCAN ID״̬ʵλÿ
- *
- * @param node_id ڵIDָĽڵ
- */
+/* CAN 电机协议说明。 */
 void Periodic_location(uint8_t node_id)
 {
-	// ģʽCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
 
-	// ׼Ϳģʽ
+	// CAN 电机协议步骤。
 	uint8_t Set_Controller_Mode[8] = Periodic_position;
 	can1_send_msg(can_id, Set_Controller_Mode, 8);
-	// ״̬ƵCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-	// ׼״̬άֱջ
+	// CAN 电机协议步骤。
 	uint8_t closed_control[8] = Closed_loop_control;
 	can1_send_msg(can_id1, closed_control, 8);
 	//printf("hello,Periodic_location");
 }
 
-/**
- * @brief ݽڵIDλÿָ
- *
- * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
- * Ҫʵֶضڵ˲λÿơ
- *
- * @param node_id ڵIDڼΨһCAN ID
- */
+/* CAN 电机协议说明。 */
 void Filtering_location(uint8_t node_id)
 {
 	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
 
-	// ׼Ϳģʽ
+	// CAN 电机协议步骤。
 	uint8_t Set_Controller_Mode[8] = Filtering_position;
 	can1_send_msg(can_id, Set_Controller_Mode, 8);
-	// ״̬ƵCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-	// ׼״̬άֱջ
+	// CAN 电机协议步骤。
 	uint8_t closed_control[8] = Closed_loop_control;
-	can1_send_msg(can_id1, closed_control, 8);// ѾΪ˲λÿģʽ,ҪãֱӱջС
+	can1_send_msg(can_id1, closed_control, 8);// CAN 电机协议步骤。
 	//HAL_CAN_AddTxMessage(&hcan, &tx_header, tx_data, &tx_mailbox);
 	
   //printf("hello,Filtering_location");
@@ -244,7 +198,7 @@ void Filtering_location(uint8_t node_id)
 
 //uint16_t can_id = calculate_can_id(node_id, 0x01F);
 
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] ={0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
 }
@@ -260,103 +214,89 @@ void Close_control_mode(uint8_t node_id)
 
 
 
-// * @brief ģʽ
+// CAN 电机协议步骤。
 // *
-// * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
-// * Ҫʵֶضڵֱؿơ
-// *  @param node_id ڵIDڼΨһCAN ID
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 void Direct_torque(uint8_t node_id)
 {
-	// ģʽCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
-	// ׼Ϳģʽ
+	// CAN 电机协议步骤。
 	uint8_t Set_Controller_Mode[8] = Direct_torque_control;
 	can1_send_msg(can_id, Set_Controller_Mode, 8);
-	// ״̬ƵCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-	// ׼״̬άֱջ
+	// CAN 电机协议步骤。
 	uint8_t closed_control[8] = Closed_loop_control;
 	can1_send_msg(can_id1, closed_control, 8);
 }
 
- /* @brief ٶģʽ
- *
- * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
- * Ҫʵֶضڵֱٶȿơ
- *  @param node_id ڵIDڼΨһCAN ID
- */
+ /* CAN 电机协议说明。 */
 void Direct_Speed(uint8_t node_id)
 {
-	// ģʽCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
-	// ׼Ϳģʽ
+	// CAN 电机协议步骤。
 	uint8_t Set_Controller_Mode[8] = Direct_velocity_control;
 	can1_send_msg(can_id, Set_Controller_Mode, 8);
-	// ״̬ƵCAN ID
+	// CAN 电机协议步骤。
 	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-	// ׼״̬άֱջ
+	// CAN 电机协议步骤。
 	
 	uint8_t closed_control[8] = Closed_loop_control;
 	can1_send_msg(can_id1, closed_control, 8);
 }
 
 
-/**
- * ýڵĿλ
- *
- * úͨCANָڵ㷢ͿĿλԼٶȺصǰֵ
- *
- * @param node_id ڵIDڱʶеľڵ
- * @param input_pos Ŀλãʾ
- * @param vel_ff ٶǰڸƶ̬Ӧ
- * @param torque_ff ǰڲⲿŶ߿ƾ
- */
+/* CAN 电机协议说明。 */
 void set_input_pos(uint8_t node_id, float input_pos, int16_t vel_ff, int16_t torque_ff)
 {
-	// һ8ֽڵ飬ڴ洢λáٶȺصϢ
+	// CAN 电机协议步骤。
 	uint8_t data[8] = {0};
   
-  	//޷
+  	// CAN 电机协议步骤。
 //	float limit = 4.0;
 //	if(input_pos >  limit)	input_pos =  limit;
 //	if(input_pos < -limit)	input_pos = -limit;
   
-	// λתΪIEEE 754ʽ32λ洢ǰ4ֽ
+	// CAN 电机协议步骤。
 	uint32_t pos = float_to_uint32(input_pos);
 	data[0] = (pos >> 0) & 0xFF;
 	data[1] = (pos >> 8) & 0xFF;
 	data[2] = (pos >> 16) & 0xFF;
 	data[3] = (pos >> 24) & 0xFF;
 
-	// ٶǰ洢ڵ4͵5ֽڣС˸ʽ
+	// CAN 电机协议步骤。
 	uint16_t vel_ff_fixed = (uint16_t)vel_ff;
 	data[4] = (vel_ff_fixed >> 0) & 0xFF;
 	data[5] = (vel_ff_fixed >> 8) & 0xFF;
 
-	// ǰ洢ڵ6͵7ֽڣС˸ʽ
+	// CAN 电机协议步骤。
 	uint16_t torque_ff_fixed = (uint16_t)torque_ff;
 	data[6] = (torque_ff_fixed >> 0) & 0xFF;
 	data[7] = (torque_ff_fixed >> 8) & 0xFF;
 
-	// CANϢIDÿģʽ
+	// CAN 电机协议步骤。
 	uint16_t can_id = calculate_can_id(node_id, SET_INPUT_POS); // Set_Controller_Mode
 
-	// CANϢڵIDݳȺ
+	// CAN 电机协议步骤。
 	can1_send_msg(can_id, data, 8);
 }
 
 void set_input_torque(uint8_t node_id, float input_torque)
 {
-	// һ8ֽڵ飬ڴ洢λáٶȺصϢ
+	// CAN 电机协议步骤。
 	uint8_t data[8] = {0};
   
-  	//޷
+  	// CAN 电机协议步骤。
 //	float limit = 4.0;
 //	if(input_pos >  limit)	input_pos =  limit;
 //	if(input_pos < -limit)	input_pos = -limit;
   
-	// λתΪIEEE 754ʽ32λ洢ǰ4ֽ
+	// CAN 电机协议步骤。
 //	uint32_t torque = float_to_uint32(input_torque*0.12f);
   	uint32_t torque = float_to_uint32(input_torque*1.0f);
 	data[0] = (torque >> 0) & 0xFF;
@@ -364,10 +304,10 @@ void set_input_torque(uint8_t node_id, float input_torque)
 	data[2] = (torque >> 16) & 0xFF;
 	data[3] = (torque >> 24) & 0xFF;
 
-	// CANϢIDÿģʽ
+	// CAN 电机协议步骤。
 	uint16_t can_id = calculate_can_id(node_id, SET_INPUT_TORQUE); // Set_Controller_Mode
 
-	// CANϢڵIDݳȺ
+	// CAN 电机协议步骤。
 	can1_send_msg(can_id, data, 8);
 }
 
@@ -398,7 +338,7 @@ void stop(uint8_t node_id)
 
 ///**
 // * @brief       CAN_ID
-// * @param       node_idڵid
+// CAN 电机协议步骤。
 // * @param       cmd_id
 // * @retval      can_id
 // */
@@ -413,153 +353,153 @@ void stop(uint8_t node_id)
 //	Close_control_mode(node_id);
 //}
 ///**
-// * CANController Area Networkʶ
-// * CANʶCANΨһʶÿϢĴ
-// * ͨϽڵIDIDʶ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDʾϢķ߻
-// * @param cmd_id IDʾϢͻ
-// * @return ؼCANʶ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //uint32_t calculate_can_id(uint8_t node_id, uint8_t cmd_id)
 //{
-//// ȷnode_idֻռ6λ
+// CAN 电机协议步骤。
 ////	node_id &= 0x3F; // 0x3F == 0011 1111
-//// node_id5λΪcmd_idλ
+// CAN 电机协议步骤。
 //	return ((uint32_t)node_id << 5) | cmd_id;
 //}
 ///**
-// * ȸתΪ32λ޷
+// CAN 电机协议步骤。
 // *
-// * ˺ͨ壨unionķʽʵתַƹĳЩֱתơ
-// *  float_to_int ͬʱӵһԱ f һ޷Ա iǹͬһڴ档
-// *  f ֱֵͨ޷ i ȡڴĶݣӶʵת
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // *
-// * ע⣺תضϵͳͱܲпֲԡ
+// CAN 电机协议步骤。
 // *
-// * @param value ȸƱʾתΪ32λ޷
-// * @return 32λ޷븡ĶƱʾ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //uint32_t float_to_uint32(float value)
 //{
-//	// һ壬ڸת
+// CAN 电机协议步骤。
 //	union
 //	{
 //		float f;
 //		uint32_t i;
 //	} float_to_int;
 
-//	// ĸֵĸԱ
+// CAN 电机协议步骤。
 //	float_to_int.f = value;
-//	// ع޷ԱĶƱʾ
+// CAN 电机协议步骤。
 //	return float_to_int.i;
 //}
 
 ///**
-// * 32λ޷תΪ
+// CAN 电机协议步骤。
 // *
-// * ˺һ32λ޷uint32_tΪ룬ͣ reinterpret castΪһfloat
-// * תͨ壨unionʵֵģһڴռӵвͬ
-// * ʹֱַڴ漶Ͻ½ΪҪֱӷʸڲʾº
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // *
-// * @param intValue һ32λ޷תΪ
-// * @return תĸֵ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //float intToFloat(uint32_t intValue)
 //{
-//	// һͨһԱڴ棬ͬʱЩڴ汻Ա
+// CAN 电机协议步骤。
 //	FloatConverter converter;
-//	// ֵ
+// CAN 电机协议步骤。
 //	converter.i = intValue;
-//	// عĸ֣⽫ֱӷԭʼڴеĸ
+// CAN 电机协议步骤。
 //	return converter.f;
 //}
 
 ///**
 // *
-// * úȼģʽCAN IDȻͿģʽ
-// * ż״̬ƵCAN ID״̬ʵλÿ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDָĽڵ
+// CAN 电机协议步骤。
 // */
 //void Periodic_location(uint8_t node_id)
 //{
-//	// ģʽCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
 
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] = Periodic_position;
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
-//	// ״̬ƵCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-//	// ׼״̬άֱջ
+// CAN 电机协议步骤。
 //	uint8_t closed_control[8] = Closed_loop_control;
 //	can1_send_msg(can_id1, closed_control, 8);
 //	printf("hello,Periodic_location");
 //}
 
 ///**
-// * @brief ݽڵIDλÿָ
+// CAN 电机协议步骤。
 // *
-// * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
-// * Ҫʵֶضڵ˲λÿơ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDڼΨһCAN ID
+// CAN 电机协议步骤。
 // */
 //void Filtering_location(uint8_t node_id)
 //{
 //	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
 
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] = Filtering_position;
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
-//	// ״̬ƵCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-//	// ׼״̬άֱջ
+// CAN 电机协议步骤。
 //	uint8_t closed_control[8] = Closed_loop_control;
-//	can1_send_msg(can_id1, closed_control, 8);// ѾΪ˲λÿģʽ,ҪãֱӱջС
+// CAN 电机协议步骤。
 ////	HAL_CAN_AddTxMessage(&hcan, &tx_header, tx_data, &tx_mailbox);
 //	
 //  printf("hello,Filtering_location");
 //}
 ///**
-// * @brief ٶģʽ
+// CAN 电机协议步骤。
 // *
-// * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
-// * Ҫʵֶضڵֱٶȿơ
-// *  @param node_id ڵIDڼΨһCAN ID
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //void Direct_Speed(uint8_t node_id)
 //{
-//	// ģʽCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] = Direct_velocity_control;
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
-//	// ״̬ƵCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-//	// ׼״̬άֱջ
+// CAN 电机协议步骤。
 //	
 //	uint8_t closed_control[8] = Closed_loop_control;
 //	can1_send_msg(can_id1, closed_control, 8);
 //}
 ///**
-// * @brief ģʽ
+// CAN 电机协议步骤。
 // *
-// * ݽڵIDӦCAN IDջָͨCAN߷ͳȥ
-// * Ҫʵֶضڵֱؿơ
-// *  @param node_id ڵIDڼΨһCAN ID
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //void Direct_torque(uint8_t node_id)
 //{
-//	// ģʽCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] = Direct_torque_control;
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
-//	// ״̬ƵCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-//	// ׼״̬άֱջ
+// CAN 电机协议步骤。
 //	uint8_t closed_control[8] = Closed_loop_control;
 //	can1_send_msg(can_id1, closed_control, 8);
 //}
@@ -568,14 +508,14 @@ void stop(uint8_t node_id)
 //{
 //	uint16_t can_id = calculate_can_id(node_id, SET_CONTROLLER_MODE); // Set_Controller_Mode
 
-//	// ׼Ϳģʽ
+// CAN 电机协议步骤。
 //	uint8_t Set_Controller_Mode[8] = Close_control;
 //	can1_send_msg(can_id, Set_Controller_Mode, 8);
-//	// ״̬ƵCAN ID
+// CAN 电机协议步骤。
 //	uint16_t can_id1 = calculate_can_id(node_id, SET_AXIS_STATE); // state_control
-//	// ׼״̬άֱջ
+// CAN 电机协议步骤。
 //	uint8_t closed_control[8] = Closed_loop_control;
-//	can1_send_msg(can_id1, closed_control, 8);// ѾΪ˲λÿģʽ,ҪãֱӱջС
+// CAN 电机协议步骤。
 ////	HAL_CAN_AddTxMessage(&hcan, &tx_header, tx_data, &tx_mailbox);
 //	
 //  printf("hello,Close_control");
@@ -583,80 +523,80 @@ void stop(uint8_t node_id)
 
 
 ///**
-// * ýڵĿλ
+// CAN 电机协议步骤。
 // *
-// * úͨCANָڵ㷢ͿĿλԼٶȺصǰֵ
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDڱʶеľڵ
-// * @param input_pos Ŀλãʾ
-// * @param vel_ff ٶǰڸƶ̬Ӧ
-// * @param torque_ff ǰڲⲿŶ߿ƾ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //void set_input_pos(uint8_t node_id, float input_pos, int16_t vel_ff, int16_t torque_ff)
 //{
-//	// һ8ֽڵ飬ڴ洢λáٶȺصϢ
+// CAN 电机协议步骤。
 //	uint8_t data[8];
 
-//	// λתΪIEEE 754ʽ32λ洢ǰ4ֽ
+// CAN 电机协议步骤。
 //	uint32_t pos = float_to_uint32(input_pos);
 //	data[0] = (pos >> 0) & 0xFF;
 //	data[1] = (pos >> 8) & 0xFF;
 //	data[2] = (pos >> 16) & 0xFF;
 //	data[3] = (pos >> 24) & 0xFF;
 
-//	// ٶǰ洢ڵ4͵5ֽڣС˸ʽ
+// CAN 电机协议步骤。
 //	uint16_t vel_ff_fixed = (uint16_t)vel_ff;
 //	data[4] = (vel_ff_fixed >> 0) & 0xFF;
 //	data[5] = (vel_ff_fixed >> 8) & 0xFF;
 
-//	// ǰ洢ڵ6͵7ֽڣС˸ʽ
+// CAN 电机协议步骤。
 //	uint16_t torque_ff_fixed = (uint16_t)torque_ff;
 //	data[6] = (torque_ff_fixed >> 0) & 0xFF;
 //	data[7] = (torque_ff_fixed >> 8) & 0xFF;
 
-//	// CANϢIDÿģʽ
+// CAN 电机协议步骤。
 //	uint16_t can_id = calculate_can_id(node_id, SET_INPUT_POS); // Set_Controller_Mode
 
-//	// CANϢڵIDݳȺ
+// CAN 电机协议步骤。
 //	can1_send_msg(can_id, data, 8);
 //}
 
 ////void set_foot_massage(uint8_t node_id, float input_pos, int16_t vel_ff, int16_t torque_ff)
 ////{
-////	// һ8ֽڵ飬ڴ洢λáٶȺصϢ
+// CAN 电机协议步骤。
 ////	uint8_t data[8];
 
-////	// λתΪIEEE 754ʽ32λ洢ǰ4ֽ
+// CAN 电机协议步骤。
 ////	uint32_t pos = float_to_uint32(input_pos);
 ////	data[0] = (pos >> 0) & 0xFF;
 ////	data[1] = (pos >> 8) & 0xFF;
 ////	data[2] = (pos >> 16) & 0xFF;
 ////	data[3] = (pos >> 24) & 0xFF;
 
-////	// ٶǰ洢ڵ4͵5ֽڣС˸ʽ
+// CAN 电机协议步骤。
 ////	uint16_t vel_ff_fixed = (uint16_t)vel_ff;
 ////	data[4] = (vel_ff_fixed >> 0) & 0xFF;
 ////	data[5] = (vel_ff_fixed >> 8) & 0xFF;
 
-////	// ǰ洢ڵ6͵7ֽڣС˸ʽ
+// CAN 电机协议步骤。
 ////	uint16_t torque_ff_fixed = (uint16_t)torque_ff;
 ////	data[6] = (torque_ff_fixed >> 0) & 0xFF;
 ////	data[7] = (torque_ff_fixed >> 8) & 0xFF;
 
-////	// CANϢIDÿģʽ
+// CAN 电机协议步骤。
 ////	uint16_t can_id = calculate_can_id(node_id, SET_INPUT_POS); // Set_Controller_Mode
 
-////	// CANϢڵIDݳȺ
+// CAN 电机协议步骤。
 ////	can_send_msg(can_id, data, 8);
 ////}
 
 
 //void set_RxSDo(uint8_t node_id, uint8_t op, uint16_t id)
 //{
-//	// һ8ֽڵ飬ڴ洢λáٶȺصϢ
+// CAN 电机协议步骤。
 //	uint8_t data[8];
 
-//	// λתΪIEEE 754ʽ32λ洢ǰ4ֽ
+// CAN 电机协议步骤。
 //	data[0] = op;
 //	data[1] = id & 0xFF;
 //	data[2] = (id >> 8) & 0xFF;
@@ -666,71 +606,71 @@ void stop(uint8_t node_id)
 //	data[6] = 0;
 //	data[7] = 0;
 
-//	// CANϢIDÿģʽ
+// CAN 电机协议步骤。
 //	uint16_t can_id = calculate_can_id(node_id, GET_ENCODER_ESTIMATES); // Set_Controller_Mode
 
-//	// CANϢڵIDݳȺ
+// CAN 电机协议步骤。
 //	can1_send_msg(can_id, data, 8);
 //}
 
 ///**
-// * ýڵĿٶ
+// CAN 电机协议步骤。
 // *
-// * úͨCANָڵ㷢ͿĿٶԼǰֵٶȿģʽ£
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDڱʶеľڵ
-// * @param input_vel Ŀٶȣʾ
-// * @param torque_ff ǰڲⲿŶ߿ƾ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //void set_input_vel(uint8_t node_id, float input_vel, int16_t torque_ff)
 //{
-//    // һ8ֽڵ飬ڴ洢ٶȺصϢ
+// CAN 电机协议步骤。
 //    uint8_t data[8];
 
-//    // ٶתΪIEEE 754ʽ32λ洢ǰ4ֽ
+// CAN 电机协议步骤。
 //    uint32_t vel = float_to_uint32(input_vel);
 //    data[0] = (vel >> 0) & 0xFF;
 //    data[1] = (vel >> 8) & 0xFF;
 //    data[2] = (vel >> 16) & 0xFF;
 //    data[3] = (vel >> 24) & 0xFF;
 
-//    // ǰ洢ڵ6͵7ֽڣС˸ʽ
+// CAN 电机协议步骤。
 //    uint16_t torque_ff_fixed = (uint16_t)torque_ff;
 //    data[6] = (torque_ff_fixed >> 0) & 0xFF;
 //    data[7] = (torque_ff_fixed >> 8) & 0xFF;
 
-//    // CANϢIDٶȿģʽµٶָ
+// CAN 电机协议步骤。
 //    uint16_t can_id = calculate_can_id(node_id, SET_INPUT_VEL); 
 
-//    // CANϢڵIDݳȺ
+// CAN 电机协议步骤。
 //    can1_send_msg(can_id, data, 8);
 //}
 ///**
-// * ýڵĿ
+// CAN 电机协议步骤。
 // *
-// * úͨCANָڵ㷢ͿĿ
+// CAN 电机协议步骤。
 // *
-// * @param node_id ڵIDڱʶеľڵ
-// * @param input_torque Ŀأʾ
+// CAN 电机协议步骤。
+// CAN 电机协议步骤。
 // */
 //void set_input_torque(uint8_t node_id, float input_torque)
 //{
-//    // һ8ֽڵ飬ڴ洢Ϣʵֻõǰ4ֽڣ
+// CAN 电机协议步骤。
 //    uint8_t data[8];
 
-//    // תΪIEEE 754ʽ32λ洢ǰ4ֽ
+// CAN 电机协议步骤。
 //    uint32_t torque = float_to_uint32(input_torque);
 //    data[0] = (torque >> 0) & 0xFF;
 //    data[1] = (torque >> 8) & 0xFF;
 //    data[2] = (torque >> 16) & 0xFF;
 //    data[3] = (torque >> 24) & 0xFF;
 
-//    // CANϢIDؿָ
+// CAN 电机协议步骤。
 //    uint16_t can_id = calculate_can_id(node_id, SET_INPUT_TORQUE); 
 
-//    // CANϢڵIDݳȺ
+// CAN 电机协议步骤。
 //    can1_send_msg(can_id, data, 4); 
-//    // עݳΪ4Ϊֻռǰ4ֽ
+// CAN 电机协议步骤。
 //}
 
 //void stop(uint8_t node_id)
