@@ -1,0 +1,27 @@
+# Local Codex metadata
+/.agents/
+/.codex/
+**/.codex/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Web monitor runtime data
+/web-monitor/data/*
+!/web-monitor/data/.gitkeep
+
+# External reference repositories
+/doc/Digibeat/
+doc/*.docx
+STM32/keilkilll.bat
+
+# Logs and editor/OS files
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
