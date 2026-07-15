@@ -1503,6 +1503,65 @@ static uint32_t run_start_tick;
 static uint32_t last_node127_sync_tick;
 static uint32_t last_diag_tick;
 static uint8_t ankle_can_ready;
+
+typedef struct {
+    MOTOR_send cmd;
+    MOTOR_recv data;
+    float center_pos;
+    float cmd_deg;
+    uint32_t last_tick;
+    uint8_t calibrated;
+} JointMotorTest_t;
+
+static JointMotorTest_t g_joint_motor_test[2];
+
+void App_TestJointMotor(uint16_t motor_id, float angle_deg, float speed_deg_s)
+{
+    JointMotorTest_t *test;
+    float angle_min;
+    float angle_max;
+    float reduction_ratio;
+    float max_step_deg;
+    uint32_t now;
+    HAL_StatusTypeDef status;
+
+    if (motor_id > HIP_MOTOR_ID) return;
+    test = &g_joint_motor_test[motor_id];
+    angle_min = (motor_id == KNEE_MOTOR_ID) ? KNEE_CMD_MIN_DEG : HIP_CMD_MIN_DEG;
+    angle_max = (motor_id == KNEE_MOTOR_ID) ? KNEE_CMD_MAX_DEG : HIP_CMD_MAX_DEG;
+    reduction_ratio = (motor_id == KNEE_MOTOR_ID) ? KNEE_REDUCTION_RATIO : HIP_REDUCTION_RATIO;
+    angle_deg = clampf_local(angle_deg, angle_min, angle_max);
+    speed_deg_s = clampf_local(speed_deg_s, 0.0f,
+                               (motor_id == KNEE_MOTOR_ID) ? KNEE_MAX_CMD_SPEED_DEG_S : HIP_MAX_CMD_SPEED_DEG_S);
+
+    test->cmd.id = motor_id;
+    if (test->calibrated == 0U) {
+        test->cmd.mode = 0U;
+        status = SERVO_Send_recv(&test->cmd, &test->data);
+        if ((status == HAL_OK) && (test->data.correct != 0U)) {
+            test->center_pos = test->data.Pos;
+            test->cmd_deg = 0.0f;
+            test->last_tick = HAL_GetTick();
+            test->calibrated = 1U;
+        }
+        return;
+    }
+
+    now = HAL_GetTick();
+    max_step_deg = speed_deg_s * (float)(now - test->last_tick) * 0.001f;
+    test->last_tick = now;
+    if (angle_deg > (test->cmd_deg + max_step_deg)) test->cmd_deg += max_step_deg;
+    else if (angle_deg < (test->cmd_deg - max_step_deg)) test->cmd_deg -= max_step_deg;
+    else test->cmd_deg = angle_deg;
+
+    test->cmd.mode = 1U;
+    test->cmd.K_P = KP_TARGET;
+    test->cmd.K_W = KW_TARGET;
+    test->cmd.W = 0.0f;
+    test->cmd.T = 0.0f;
+    test->cmd.Pos = test->center_pos + test->cmd_deg * DEG_TO_RAD * reduction_ratio;
+    (void)SERVO_Send_recv(&test->cmd, &test->data);
+}
 /* ==================================================================
  * 应用主循环逻辑
  * ================================================================== */
