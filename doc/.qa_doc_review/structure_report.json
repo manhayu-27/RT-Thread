@@ -1,0 +1,255 @@
+{
+  "file": "D:\\Myproject\\32project\\RT-Thread\\doc\\智能髋膝关节假肢系统_润色补图版.docx",
+  "paragraphs_total": 90,
+  "nonblank_paragraphs": 59,
+  "blank_paragraphs": 31,
+  "tables": 3,
+  "drawings": 19,
+  "media_files": 21,
+  "comments": 0,
+  "tracked_insertions": 0,
+  "tracked_deletions": 0,
+  "metadata": {
+    "created": "2023-10-07T15:25:00Z",
+    "creator": "xus",
+    "lastModifiedBy": "WPS_1643185048",
+    "modified": "2026-07-08T15:32:41Z",
+    "revision": "23"
+  },
+  "headings_first_80": [
+    [
+      9,
+      "",
+      "1.1 功能与特性"
+    ],
+    [
+      12,
+      "",
+      "1.2 应用领域"
+    ],
+    [
+      15,
+      "",
+      "1.3 主要技术特点"
+    ],
+    [
+      18,
+      "",
+      "1.4 主要性能指标"
+    ],
+    [
+      26,
+      "",
+      "1.5 主要创新点（1）面向 RT-Thread 自主命题赛道的髋膝关节假肢应用：将 RT-Thread 用于多传感器实时采集、线程调度、电机主控和外设协同，形成可演示的康复工程场景。 （2）生物电、惯性姿态与电机控制一体化数据链路：在 S"
+    ],
+    [
+      29,
+      "",
+      "1.6 设计流程"
+    ],
+    [
+      34,
+      "",
+      "2.1 系统整体架构本系统的整体架构由感知层、RT-Thread 控制层、电机执行层、通信转发层和上位机显示层构成。感知层包括 ADS1194 生物电采集前端和 BMI088 惯性测量单元；RT-Thread 控制层运行在 STM32F40"
+    ],
+    [
+      35,
+      "",
+      "2.2 分层功能说明感知层：ADS1194 采集四通道 ECG/EMG 原始数据，BMI088 采集大腿姿态与温度。RT-Thread 控制层：STM32F407 初始化 GPIO、USART、SPI、CAN 等外设后启动 ads1194、"
+    ],
+    [
+      39,
+      "",
+      "2.3 硬件系统组成硬件系统由生物电采集模块、惯性姿态模块、STM32F407 主控模块、髋膝电机执行模块、ESP32-S3 无线显示模块和电源/接口模块组成。（1）生物电采集模块：以 ADS1194 为核心，通过 SPI3 与 STM32"
+    ],
+    [
+      48,
+      "",
+      "2.4 软件系统组成软件系统由 STM32 RT-Thread 固件、RT-Thread 化 motor_ctrl 电机主控程序、ESP32-S3 转发固件和 PC 端 Web 上位机构成。STM32 端在 main.c 中初始化 GPIO"
+    ],
+    [
+      50,
+      "",
+      "2.5 软件各模块介绍"
+    ],
+    [
+      62,
+      "",
+      "3.1 系统实物与联调状态"
+    ],
+    [
+      65,
+      "",
+      "3.2 工程成果工程成果包括：STM32 RT-Thread 固件工程、ADS1194 四通道采集与滤波代码、BMI088 姿态与跌倒检测代码、RT-Thread 化 motor_ctrl 电机主控程序、CAN/RS485 髋膝关节电机通信"
+    ],
+    [
+      66,
+      "",
+      "3.2.1 机械与样机结构成果"
+    ],
+    [
+      68,
+      "",
+      "3.2.2 电路与采集板成果"
+    ],
+    [
+      70,
+      "",
+      "3.2.3 软件成果软件成果方面，STM32 端实现了 RT-Thread 多线程传感器采集和电机主控；motor_ctrl 程序实现静止标定、肌电触发、IDLE/MOVE/HOLD/LOST 状态管理、步态相位推进、髋膝目标角生成、CAN"
+    ],
+    [
+      73,
+      "",
+      "3.3 特性成果四通道 ECG/EMG 数据可实时上传；BMI088 姿态角与跌倒标志可随数据帧同步显示；motor_ctrl 程序可根据肌电与姿态输入推进或冻结步态相位，并向髋膝双关节执行端输出目标角；网页端支持实时波形和历史 CSV 回"
+    ]
+  ],
+  "tables_info": [
+    {
+      "index": 1,
+      "rows": 8,
+      "sample": [
+        [
+          "对比维度",
+          "传统被动假肢",
+          "本项目产品"
+        ],
+        [
+          "动力来源",
+          "完全依靠患者残肢带动",
+          "主动提供髋膝关节动力辅助"
+        ],
+        [
+          "地形适配",
+          "无自适应能力，上下坡/楼梯易摔倒",
+          "多地形自适应，智能识别和调整"
+        ]
+      ]
+    },
+    {
+      "index": 2,
+      "rows": 5,
+      "sample": [
+        [
+          "RT-Thread 任务",
+          "ADS1194、BMI088、motor_ctrl 三类线程",
+          "多线程并行",
+          "是"
+        ],
+        [
+          "STM32-ESP32 链路",
+          "USART2 1Mbps",
+          "≥250kbps",
+          "是"
+        ],
+        [
+          "电机主控程序",
+          "CAN1 髋膝关节 + USART1/RS485 髋膝电机",
+          "双关节协同",
+          "是"
+        ]
+      ]
+    },
+    {
+      "index": 3,
+      "rows": 1,
+      "sample": []
+    }
+  ],
+  "image_alts_first_30": [
+    {
+      "name": "Picture 22",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 1",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 2",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 3",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "Picture 18",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "Picture 19",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "Picture 20",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "Picture 21",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 9",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 10",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 7",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 8",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 11",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 12",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 13",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 14",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 15",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 16",
+      "title": null,
+      "descr": null
+    },
+    {
+      "name": "图片 17",
+      "title": null,
+      "descr": null
+    }
+  ]
+}

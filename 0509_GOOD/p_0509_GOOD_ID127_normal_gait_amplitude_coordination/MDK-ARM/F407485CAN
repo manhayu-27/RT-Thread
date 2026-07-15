@@ -1,0 +1,313 @@
+#include "main.h"
+#include "motor_control.h"
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "stm32f4xx_hal.h"
+
+/* --- 引入你的 CAN 电机底层库 --- */
+#include "can.h"       
+#include "control.h"
+#include "getdata.h"
+
+/* --- 硬件 ID 与参数配置 --- */
+#define KNEE_MOTOR_ID              0U        // 膝关节 485 ID
+#define HIP_MOTOR_ID               1U        // 髋关节 485 ID
+#define ANKLE_MOTOR_ID             0U        // 踝关节 CAN ID (对应 motor[0])
+
+/* 【重要调试开关】0: 正常步态; 1: 固定角度测试 */
+#define MOTOR_TEST_MODE            0
+
+#define CONTROL_PERIOD_MS          10U
+#define PRINT_PERIOD_MS            10U
+#define VOFA_ENABLE                1U
+#define RS485_DIR_PORT             GPIOA
+#define RS485_DIR_PIN              GPIO_PIN_8
+#define INIT_HOLD_MS               3000U
+#define GAIT_PERIOD_MS             600U
+
+/* 物理转换常量 */
+#define DEG_TO_RAD                 0.01745329252f
+#define RAD_TO_DEG                 57.2957795131f
+#define KNEE_REDUCTION_RATIO       6.33f
+#define HIP_REDUCTION_RATIO        6.33f
+#define ANKLE_WAVE_SCALE           1.0f
+#define ANKLE_TURN_PER_DEG         (1.0f / 360.0f)
+
+#define KNEE_DIR_SIGN              1.0f
+#define HIP_DIR_SIGN               1.0f
+#define ANKLE_CMD_DIR              (-1.0f)
+
+#define KP_TARGET                  0.85f
+#define KW_TARGET                  0.24f
+
+/* --- 算法控制参数 --- */
+#define PHASE_ADVANCE_PCT          7.0f      
+#define POS_SLEW_BASE_RAD_S_INIT   16.0f     
+#define WFF_LPF_ALPHA_INIT         0.18f     
+
+typedef struct { float phase_pct; float joint_deg; 
+					uint8_t is_calibrated;  // 新增：标记是否已经抓到了初始位置
+					} JointCurvePoint_t;
+
+typedef struct {
+    const char *name; uint16_t motor_id; float dir_sign; float amp_scale; float reduction_ratio;
+    const JointCurvePoint_t *curve; uint32_t point_count;
+    MOTOR_send cmd; MOTOR_recv data;
+    float center_pos; float soft_kp; float soft_kw; float traj_scale;
+    float cmd_pos_state; float prev_cmd_pos_state; float err_abs_lpf;
+    float wff_state; float slew_base_state; float wff_alpha_state;
+    float err_peak_abs_cycle; float err_peak_abs_last;
+    float err_sum_cycle; uint32_t err_cnt_cycle;
+    float phase_adv_state; float fb_pos_state; uint8_t fb_valid_state;
+    HAL_StatusTypeDef last_servo_status; uint8_t traj_started;
+    float target_ref_deg; float target_curve_deg; float target_slope_deg_per_pct;
+	// --- 【重点：在这里加上这一行】 ---
+    uint8_t is_calibrated;
+} JointController_t;
+
+/* --- 膝关节与髋关节步态数据 --- */
+static const JointCurvePoint_t kKneeCurve[] = {
+    {0.0f,3.0f}, {10.0f,15.0f}, {20.0f,8.0f}, {40.0f,2.0f}, {60.0f,25.0f}, {74.0f,60.0f}, {84.0f,48.0f}, {100.0f,3.0f}
+};
+static const JointCurvePoint_t kHipCurve[] = {
+    {0.0f,23.0f}, {20.0f,9.0f}, {40.0f,-14.0f}, {56.0f,-22.0f}, {75.0f,13.0f}, {86.0f,22.0f}, {100.0f,18.0f}
+};
+#define KNEE_POINT_COUNT  ((uint32_t)(sizeof(kKneeCurve) / sizeof(kKneeCurve[0])))
+#define HIP_POINT_COUNT   ((uint32_t)(sizeof(kHipCurve) / sizeof(kHipCurve[0])))
+
+/* --- 全局句柄定义 --- */
+UART_HandleTypeDef huart1; // 在此定义，解决 Undefined huart1
+UART_HandleTypeDef huart3; // 在此定义，解决 Undefined huart3
+extern CAN_HandleTypeDef hcan1; // 从 can.c 引用
+
+/* --- 踝关节步态插值 --- */
+static float ankle_wave_deg_from_percent(float gait_percent) {
+    static const float gait_key[] = {0.0f, 6.0f, 10.0f, 16.0f, 22.0f, 28.0f, 35.0f, 45.0f, 52.0f, 56.0f, 62.0f, 68.0f, 75.0f, 82.0f, 90.0f, 96.0f, 100.0f};
+    static const float ankle_key[] = {-2.0f, -15.0f, -13.0f, -9.0f, -4.0f, 0.0f, 3.0f, 6.0f, 2.0f, -5.0f, -12.5f, -11.0f, -8.0f, -5.0f, -2.0f, -1.0f, -3.0f};
+    const uint32_t point_num = (uint32_t)(sizeof(gait_key) / sizeof(gait_key[0]));
+    if (gait_percent <= gait_key[0]) return ankle_key[0];
+    if (gait_percent >= gait_key[point_num - 1]) return ankle_key[point_num - 1];
+    for (uint32_t i = 0; i < point_num - 1; i++) {
+        if (gait_percent <= gait_key[i + 1]) {
+            float span = gait_key[i + 1] - gait_key[i];
+            float ratio = (span > 0.0f) ? ((gait_percent - gait_key[i]) / span) : 0.0f;
+            return ankle_key[i] + ratio * (ankle_key[i + 1] - ankle_key[i]);
+        }
+    }
+    return ankle_key[point_num - 1];
+}
+
+/* --- 函数声明 --- */
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_USART3_UART_Init(void);
+static float Joint_GetFeedbackDeg(const JointController_t *j);
+static void Vofa_SendFrame(float t_ms, float phase_pct, const JointController_t *knee, const JointController_t *hip, float ankle_ref, float ankle_fb);
+
+static float wrap_phase_pct(float phase_pct) { 
+    while (phase_pct >= 100.0f) phase_pct -= 100.0f; 
+    while (phase_pct < 0.0f) phase_pct += 100.0f; 
+    return phase_pct; 
+}
+
+static void get_curve_target(const JointCurvePoint_t *curve, uint32_t count, float phase, float *deg) {
+    phase = wrap_phase_pct(phase);
+    for (uint32_t i = 0; i < count - 1; i++) {
+        if (phase <= curve[i+1].phase_pct) {
+            float t = (phase - curve[i].phase_pct) / (curve[i+1].phase_pct - curve[i].phase_pct);
+            *deg = curve[i].joint_deg + t * (curve[i+1].joint_deg - curve[i].joint_deg);
+            return;
+        }
+    }
+    *deg = curve[count-1].joint_deg;
+}
+
+static void Joint_Init(JointController_t *j, const char *name, uint16_t id, float dir, float ratio, const JointCurvePoint_t *c, uint32_t cnt) {
+    memset(j, 0, sizeof(*j)); j->name = name; j->motor_id = id; j->dir_sign = dir; j->reduction_ratio = ratio; j->curve = c; j->point_count = cnt;
+    j->phase_adv_state = PHASE_ADVANCE_PCT; j->slew_base_state = POS_SLEW_BASE_RAD_S_INIT; j->wff_alpha_state = WFF_LPF_ALPHA_INIT;
+    j->last_servo_status = HAL_OK; j->cmd.id = id;
+	j->is_calibrated = 0; // 确保开机时是未校准
+}
+
+static void Joint_PrepareRun(JointController_t *j, float phase_pct) {
+    float target_deg; get_curve_target(j->curve, j->point_count, phase_pct + j->phase_adv_state, &target_deg);
+    if (j->traj_scale < 1.0f) j->traj_scale += 0.015f; if (j->soft_kp < KP_TARGET) j->soft_kp += 0.003f;
+    j->cmd.mode = 1U; j->cmd.K_P = j->soft_kp; j->cmd.K_W = KW_TARGET;
+    j->target_ref_deg = target_deg * j->traj_scale;
+    j->cmd.Pos = j->center_pos + j->dir_sign * (j->target_ref_deg * DEG_TO_RAD) * j->reduction_ratio;
+}
+
+static void Joint_HandleResponse(JointController_t *j, HAL_StatusTypeDef status) {
+    j->last_servo_status = status; 
+    
+    if (status == HAL_OK && j->data.correct) { 
+        j->fb_pos_state = j->data.Pos; 
+        j->fb_valid_state = 1U; 
+
+        // 只要是开机后第一次收到电机的合法回包，就立刻把这个点定为零点
+        if (j->is_calibrated == 0) {
+            j->center_pos = j->data.Pos; // 记录初始位置
+            j->is_calibrated = 1;        // 以后再也不进这个判断了
+        }
+    }
+}
+
+static float Joint_GetFeedbackDeg(const JointController_t *j) {
+    float fb = j->fb_valid_state ? j->fb_pos_state : j->data.Pos;
+    float div = (j->dir_sign * j->reduction_ratio * DEG_TO_RAD);
+    if (fabsf(div) < 1e-6f) return 0.0f;
+    return (fb - j->center_pos) / div;
+}
+
+/* ==================================================================
+ * MAIN 执行逻辑
+ * ================================================================== */
+int main(void) {
+    JointController_t knee, hip;
+    uint32_t last_tick, last_print;
+    uint32_t gait_elapsed_prev_ms = 0;
+
+    HAL_Init();
+    SystemClock_Config(); 
+    MX_GPIO_Init();
+    MX_USART1_UART_Init();
+
+    // --- [监控 1] 确认时钟和串口 OK ---
+    HAL_Delay(100);
+    const char* m1 = "\r\n[Step 1] CPU & UART1 OK. Initializing USART3/CAN...\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m1, strlen(m1), 100);
+
+    MX_USART3_UART_Init();
+    MX_CAN1_Init(); 
+
+    // --- [监控 2] 准备启动 CAN ---
+    const char* m2 = "[Step 2] Ready to Start CAN & Filters...\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m2, strlen(m2), 100);
+    USER_CAN1_Start(); 
+
+    // --- [监控 3] 准备停止电机指令 ---
+    const char* m3 = "[Step 3] Sending motor_stop_init() [Blocking Search]...\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m3, strlen(m3), 100);
+    HAL_Delay(50);
+    motor_stop_init(); // 如果卡在这里，串口会停留在 Step 3
+
+    // --- [监控 4] 准备使能电机 ---
+    const char* m4 = "[Step 4] Sending motor_init(0, 1) [Waiting for ACK]...\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m4, strlen(m4), 100);
+    HAL_Delay(50);
+    motor_init(0, 1);  // 如果卡在这里，说明没收到节点 0 的应答回包
+	HAL_Delay(50);
+    motor_init(1, 1);  // 初始化 ID 1 (新增)
+    // --- [监控 5] 准备校准 ---
+    const char* m5 = "[Step 5] Motor Init Finished. Now Calibrating...\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m5, strlen(m5), 100);
+    HAL_Delay(200);
+    Calibrate_motor_init(); 
+
+    // --- [监控 6] 全部初始化完成 ---
+    const char* m6 = "[Step 6] ALL SUCCESS! Entering Main Loop.\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t*)m6, strlen(m6), 100);
+
+    // 统一初始化结构体
+    Joint_Init(&knee, "knee", KNEE_MOTOR_ID, KNEE_DIR_SIGN, KNEE_REDUCTION_RATIO, kKneeCurve, KNEE_POINT_COUNT);
+    Joint_Init(&hip, "hip", HIP_MOTOR_ID, HIP_DIR_SIGN, HIP_REDUCTION_RATIO, kHipCurve, HIP_POINT_COUNT);
+
+    last_tick = HAL_GetTick(); last_print = 0;
+     HAL_UART_Transmit(&huart1, (uint8_t*)"System Fusion Booted!\r\n", 23, 100);
+
+    
+
+   
+    while (1) {
+        uint32_t now = HAL_GetTick();
+        if (now - last_tick >= CONTROL_PERIOD_MS) {
+            last_tick = now;
+
+            if (now < (INIT_HOLD_MS + 500)) { // 稍微延长初始化锁定
+                knee.cmd.mode = 0; Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
+                hip.cmd.mode = 0;  Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+                set_input_pos(0, motor[0].init_pos, 0, 0);
+            } 
+            else {
+                uint32_t gait_ms = (now - INIT_HOLD_MS) % GAIT_PERIOD_MS;
+                float phase = (float)gait_ms * 100.0f / (float)GAIT_PERIOD_MS;
+                
+                // 修复警告：使用此变量
+                if (gait_ms < gait_elapsed_prev_ms) {
+                    // 一个步态周期结束
+                }
+                gait_elapsed_prev_ms = gait_ms;
+
+                Joint_PrepareRun(&knee, phase); Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
+                Joint_PrepareRun(&hip, phase);  Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+
+                float ankle_deg = ankle_wave_deg_from_percent(phase);
+                float ankle_turn = motor[0].init_pos + ANKLE_CMD_DIR * (ankle_deg * ANKLE_TURN_PER_DEG);
+               // 重点：同时尝试发送给两个 ID
+                set_input_pos(0, ankle_turn, 0, 0); 
+                set_input_pos(1, ankle_turn, 0, 0); 
+            }
+
+            if (now - last_print >= PRINT_PERIOD_MS) {
+                last_print = now;
+
+                // 1. 修正时间戳显示，防止出现几亿的下溢数字
+                float plot_time = (now < INIT_HOLD_MS) ? 0.0f : (float)(now - INIT_HOLD_MS);
+
+                // 2. 计算当前步态的目标角度 (仅在初始化结束后开始显示波形)
+                float a_ref = 0.0f;
+                if (now >= INIT_HOLD_MS) {
+                    uint32_t g_ms = (now - INIT_HOLD_MS) % GAIT_PERIOD_MS;
+                    a_ref = ankle_wave_deg_from_percent((float)g_ms * 100.0f / (float)GAIT_PERIOD_MS);
+                }
+
+                // 3. 同时读取 ID 0 和 ID 1 的反馈（解决 CAN 电机不转/无反馈的排查）
+                float a_fb0 = (motor[0].pos - motor[0].init_pos) / (ANKLE_CMD_DIR * ANKLE_TURN_PER_DEG);
+                float a_fb1 = (motor[1].pos - motor[1].init_pos) / (ANKLE_CMD_DIR * ANKLE_TURN_PER_DEG);
+                
+                // 只要 ID 0 或 ID 1 其中一个有数值反馈，就显示它
+                float final_fb = (fabsf(a_fb0) > 0.001f) ? a_fb0 : a_fb1;
+
+                // 4. 发送给 VOFA
+                Vofa_SendFrame(plot_time, 0.0f, &knee, &hip, a_ref, final_fb);
+            }
+        }
+    }
+}
+
+static void Vofa_SendFrame(float t_ms, float phase_pct, const JointController_t *knee, const JointController_t *hip, float ankle_ref, float ankle_fb) {
+    char tx[400];
+    int len = sprintf(tx, "demo:%.1f,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                      t_ms, (int)knee->last_servo_status, (int)hip->last_servo_status,
+                      knee->target_ref_deg, Joint_GetFeedbackDeg(knee),
+                      hip->target_ref_deg, Joint_GetFeedbackDeg(hip),
+                      ankle_ref, ankle_fb);
+    if (len > 0) HAL_UART_Transmit(&huart1, (uint8_t*)tx, (uint16_t)len, 20);
+}
+
+/* --- 底层硬件配置 (基于 160MHz) --- */
+void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0}; RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    __HAL_RCC_PWR_CLK_ENABLE(); __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE; RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON; RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLM = 8; RCC_OscInitStruct.PLL.PLLN = 320; RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2; RCC_OscInitStruct.PLL.PLLQ = 4;
+    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1; RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4; RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5);
+}
+
+static void MX_USART1_UART_Init(void) { huart1.Instance = USART1; huart1.Init.BaudRate = 115200; huart1.Init.Mode = UART_MODE_TX_RX; HAL_UART_Init(&huart1); }
+static void MX_USART3_UART_Init(void) { huart3.Instance = USART3; huart3.Init.BaudRate = 4000000; huart3.Init.Mode = UART_MODE_TX_RX; huart3.Init.OverSampling = UART_OVERSAMPLING_8; HAL_UART_Init(&huart3); }
+static void MX_GPIO_Init(void) {
+    __HAL_RCC_GPIOA_CLK_ENABLE(); __HAL_RCC_GPIOB_CLK_ENABLE(); __HAL_RCC_GPIOD_CLK_ENABLE();
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    HAL_GPIO_WritePin(RS485_DIR_PORT, RS485_DIR_PIN, GPIO_PIN_RESET);
+    GPIO_InitStruct.Pin = RS485_DIR_PIN; GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP; GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(RS485_DIR_PORT, &GPIO_InitStruct);
+}
+void Error_Handler(void) { while (1) {} }

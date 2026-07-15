@@ -1,0 +1,71 @@
+<html>
+<body>
+<pre>
+<h1>µVision Build Log</h1>
+<h2>Tool Versions:</h2>
+IDE-Version: ¦ÌVision V5.41.0.0
+Copyright (C) 2024 ARM Ltd and ARM Germany GmbH. All rights reserved.
+License Information: 314 hangxing_2022@qq.com, 314, LIC=RC93N-YRZYP-12ULE-5M3JR-CRL71-L7XPY
+ 
+Tool Versions:
+Toolchain:       MDK-ARM Plus  Version: 5.41.0.0
+Toolchain Path:  D:\software\keil\ARM\ARMCC\Bin
+C Compiler:      Armcc.exe V5.06 update 5 (build 528)
+Assembler:       Armasm.exe V5.06 update 5 (build 528)
+Linker/Locator:  ArmLink.exe V5.06 update 5 (build 528)
+Library Manager: ArmAr.exe V5.06 update 5 (build 528)
+Hex Converter:   FromElf.exe V5.06 update 5 (build 528)
+CPU DLL:         SARMCM3.DLL V5.41.0.0
+Dialog DLL:      DCM.DLL V1.17.5.0
+Target DLL:      STLink\ST-LINKIII-KEIL_SWO.dll V3.3.0.0
+Dialog DLL:      TCM.DLL V1.56.4.0
+ 
+<h2>Project:</h2>
+D:\Myproject\32project\RT-Thread\0509_GOOD\p_0509_GOOD_ID127_normal_gait_amplitude_coordination\MDK-ARM\F407yushu.uvprojx
+Project File Date:  07/15/2026
+
+<h2>Output:</h2>
+*** Using Compiler 'V5.06 update 5 (build 528)', folder: 'D:\software\keil\ARM\ARMCC\Bin'
+Build target 'F407yushu'
+compiling main.c...
+compiling can.c...
+compiling app.c...
+..\Mycode\app.c(248): warning:  #550-D: variable "g_node127_last_motion_tick"  was set but never used
+  static uint32_t g_node127_last_motion_tick = 0U;
+..\Mycode\app.c(279): warning:  #550-D: variable "g_node127_still_start_tick"  was set but never used
+  static uint32_t g_node127_still_start_tick = 0U;
+..\Mycode\app.c(280): warning:  #550-D: variable "g_node127_emg_on_start_tick"  was set but never used
+  static uint32_t g_node127_emg_on_start_tick = 0U;
+..\Mycode\app.c(281): warning:  #550-D: variable "g_node127_last_stop_tick"  was set but never used
+  static uint32_t g_node127_last_stop_tick = 0U;
+..\Mycode\app.c: 4 warnings, 0 errors
+linking...
+Program Size: Code=26596 RO-data=2332 RW-data=272 ZI-data=11376  
+FromELF: creating hex file...
+"F407yushu\F407yushu.axf" - 0 Error(s), 4 Warning(s).
+
+<h2>Software Packages used:</h2>
+
+Package Vendor: ARM
+                https://www.keil.com/pack/ARM.CMSIS.6.1.0.pack
+                ARM::CMSIS@6.1.0
+                CMSIS (Common Microcontroller Software Interface Standard)
+   * Component: CORE Version: 6.1.0
+
+Package Vendor: Keil
+                https://www.keil.com/pack/Keil.STM32F4xx_DFP.3.0.0.pack
+                Keil::STM32F4xx_DFP@3.0.0
+                STMicroelectronics STM32F4 Series Device Support
+
+<h2>Collection of Component include folders:</h2>
+  ./RTE/_F407yushu
+  D:/software/keil/ARM/PACK/ARM/CMSIS/6.1.0/CMSIS/Core/Include
+
+<h2>Collection of Component Files used:</h2>
+
+   * Component: ARM::CMSIS:CORE@6.1.0
+      Include file:  CMSIS/Core/Include/tz_context.h
+Build Time Elapsed:  00:00:03
+</pre>
+</body>
+</html>
