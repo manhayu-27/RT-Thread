@@ -30,7 +30,7 @@
 
 /* ================= Node127 融合控制参数 =================
  * Node127 通过 CAN2（PB5/PB6）通信；主控每 10 ms 发送一次 0x010 同步帧。
- * ID=127 发送三路大腿肌电，ID=227 发送同序号三轴角速度。
+ * ID=127 发送三路大腿肌电，ID=227 发送同序号俯仰角、X 轴角速度和运动状态。
  */
 #define NODE127_SYNC_CAN_ID        0x010U
 #define NODE127_SYNC_PERIOD_MS     10U
@@ -47,9 +47,9 @@
 #define NODE127_GYRO_DEADBAND_RAW  320.0f  /* Q6: 5 degrees/s. */
 #define NODE127_GYRO_FULL_RAW      9600.0f /* Q6: another 150 degrees/s reaches full scale. */
 #define NODE127_MOTION_HOLD_MS     80U     /* short anti-jitter hold only */
-#define NODE127_PHASE_MIN_SPEED    90.0f   /* 正常步态相位速度下限，由肌电强度调节。 */
-#define NODE127_PHASE_MAX_SPEED    205.0f   /* 正常步态相位速度上限，防止步态运行过快。 */
 #define NODE127_GAIT_SCALE         1.0f
+#define NODE127_PITCH_Q            64.0f
+#define NODE127_IMU_MOVING_FLAG    0x0001U
 #define NODE127_CALIB_MS           1000U     /* Rest calibration; all motors hold during this time. */
 #define NODE127_MOVE_ON_GYRO_NORM   0.12f     /* 陀螺仪不单独触发运动，只参与运动强度计算。 */
 #define NODE127_MOVE_ON_EMG_NORM    0.170f    /* 肌电运动触发阈值，达到后才进入运动状态。 */
@@ -69,18 +69,22 @@
 #define NODE124_EMG_KEEP_RAW       20.0f
 
 /* =============== 三关节协调与幅度限制参数 ===============
- * 髋、膝、踝共用同一个步态相位，不分别独立运行。
- * Node127 肌电决定是否运动，肌电和陀螺仪强度决定相位速度与幅值。
+ * 肌电决定是否允许运动，IMU 决定实际运动状态。
+ * 髋关节直接跟随大腿俯仰，膝、踝相位按大腿累计摆角推进。
  * 所有关节从上电当前位置开始，避免首次启动时目标角度突然跳变。
  */
 #define GAIT_AMP_MIN_SCALE          0.35f    /* 启动时使用 35% 正常步态幅值，避免突然跳变。 */
 #define GAIT_AMP_MAX_SCALE          1.00f    /* 最大输出为正常步态幅值。 */
 #define GAIT_AMP_RAMP_UP_PER_S      2.20f    /* 步态幅值渐变速度，从小幅逐步过渡到正常幅值。 */
-#define GAIT_PHASE_SPEED_LPF_ALPHA  0.32f    /* phase speed low-pass */
 #define GAIT_AMP_DECAY_PER_S        1.60f    /* decay commanded gait amplitude quickly after human intent disappears */
 #define KNEE_JOINT_ANGLE_SCALE      0.92f    /* 膝关节步态角度缩放系数。 */
 #define HIP_JOINT_ANGLE_SCALE       0.85f    /* 髋关节步态角度缩放系数。 */
 #define ANKLE_JOINT_ANGLE_SCALE     0.95f    /* 踝关节步态角度缩放系数。 */
+#define THIGH_PITCH_SIGN            1.0f     /* Set to -1 if forward swing commands the wrong direction. */
+#define THIGH_PITCH_GAIN            1.0f     /* Prosthesis hip angle / measured thigh angle. */
+#define THIGH_PHASE_PCT_PER_DEG     1.0f     /* Tune until one full thigh cycle advances about 100 percent. */
+#define THIGH_PHASE_NOISE_DEG       0.08f
+#define THIGH_PHASE_MAX_DELTA_DEG   8.0f
 #define KNEE_MAX_CMD_SPEED_DEG_S    320.0f   /* 膝关节目标角速度上限，防止目标变化过快。 */
 #define HIP_MAX_CMD_SPEED_DEG_S     240.0f
 
@@ -250,8 +254,12 @@ static uint32_t g_node124_last_peak_tick = 0U;
 static uint32_t g_node124_ignore_until_tick = 0U;
 static float g_node127_phase_pct = GAIT_START_PHASE_PCT;
 static float g_gait_amp_state = 0.0f;          /* 统一的步态幅值系数，供所有关节使用。 */
-static float g_gait_phase_speed_state = 0.0f;  /* 平滑后的步态相位速度，供所有关节使用。 */
 static uint8_t g_node127_first_motion_seen = 0U;
+static int32_t g_node127_pitch_bias_sum = 0;
+static float g_node127_pitch_bias = 0.0f;
+static float g_node127_last_phase_pitch_deg = 0.0f;
+static uint16_t g_node127_last_phase_sequence = 0U;
+static uint32_t g_node127_last_imu_motion_tick = 0U;
 
 typedef enum {
     NODE127_STATE_BOOT = 0,
@@ -267,11 +275,7 @@ static uint8_t g_node127_calibrated = 0U;
 static uint32_t g_node127_calib_start_tick = 0U;
 static uint32_t g_node127_calib_count = 0U;
 static int32_t g_node127_gx_bias_sum = 0;
-static int32_t g_node127_gy_bias_sum = 0;
-static int32_t g_node127_gz_bias_sum = 0;
 static float g_node127_gx_bias = 0.0f;
-static float g_node127_gy_bias = 0.0f;
-static float g_node127_gz_bias = 0.0f;
 static uint32_t g_node127_still_start_tick = 0U;
 static uint32_t g_node127_emg_on_start_tick = 0U;
 static uint32_t g_node127_last_stop_tick = 0U;
@@ -806,26 +810,12 @@ static float Joint_GetMaxCmdSpeedDegS(const JointController_t *j)
     return 60.0f;
 }
 
-static void Joint_PrepareRunRelative(JointController_t *j, float phase_pct)
+static void Joint_PrepareFollowRelative(JointController_t *j, float target_deg)
 {
-    float curve_deg;
-    float zero_deg;
-    float target_deg;
     float max_step_deg;
 
-    if ((j == NULL) || (j->curve == NULL) || (j->point_count == 0U)) return;
-
-    /*
- * 步态模板是绝对角度曲线，而电机上电零点是当前位置。
- * 因此髋、膝命令必须减去起始相位的曲线值，避免启动时突然跳变。
- */
-    get_curve_target(j->curve, j->point_count, phase_pct + j->phase_adv_state, &curve_deg);
-    get_curve_target(j->curve, j->point_count, GAIT_START_PHASE_PCT + j->phase_adv_state, &zero_deg);
-
-    target_deg = (curve_deg - zero_deg) * Joint_GetAngleScale(j) * g_gait_amp_state;
+    if (j == NULL) return;
     target_deg = Joint_ClampCurveDeg(j, target_deg);
-
-    /* 目标角度限速，防止肌电突然增大时电机目标一步跳变。 */
     max_step_deg = Joint_GetMaxCmdSpeedDegS(j) * ((float)CONTROL_PERIOD_MS * 0.001f);
     if (j->traj_started == 0U) {
         j->cmd_pos_state = 0.0f;
@@ -841,14 +831,26 @@ static void Joint_PrepareRunRelative(JointController_t *j, float phase_pct)
 
     if (j->soft_kp < KP_TARGET) j->soft_kp += 0.002f;
     if (j->soft_kp > KP_TARGET) j->soft_kp = KP_TARGET;
-
     j->cmd.id = j->motor_id;
     j->cmd.mode = 1U;
     j->cmd.K_P = j->soft_kp;
     j->cmd.K_W = KW_TARGET;
-    j->target_curve_deg = curve_deg - zero_deg;
+    j->target_curve_deg = target_deg;
     j->target_ref_deg = target_deg;
     j->cmd.Pos = j->center_pos + j->dir_sign * (j->cmd_pos_state * DEG_TO_RAD) * j->reduction_ratio;
+}
+
+static void Joint_PrepareRunRelative(JointController_t *j, float phase_pct)
+{
+    float curve_deg;
+    float zero_deg;
+
+    if ((j == NULL) || (j->curve == NULL) || (j->point_count == 0U)) return;
+    get_curve_target(j->curve, j->point_count, phase_pct + j->phase_adv_state, &curve_deg);
+    get_curve_target(j->curve, j->point_count, GAIT_START_PHASE_PCT + j->phase_adv_state, &zero_deg);
+    Joint_PrepareFollowRelative(j,
+        (curve_deg - zero_deg) * Joint_GetAngleScale(j) * g_gait_amp_state);
+    j->target_curve_deg = curve_deg - zero_deg;
 }
 
 static void Joint_PrepareHoldLast(JointController_t *j)
@@ -1000,19 +1002,17 @@ static uint8_t Node127_DataFresh(uint32_t now)
     return ((now - g_node127.gyro_tick) <= NODE127_DATA_TIMEOUT_MS) ? 1U : 0U;
 }
 
-static int16_t Node127_GetMaxAbsGyroRaw(void)
+static int16_t Node127_GetAbsPitchRateRaw(void)
 {
     float x = (float)g_node127.gx - g_node127_gx_bias;
-    float y = (float)g_node127.gy - g_node127_gy_bias;
-    float z = (float)g_node127.gz - g_node127_gz_bias;
-    float ax = fabsf(x);
-    float ay = fabsf(y);
-    float az = fabsf(z);
-    float m = ax;
-    if (ay > m) m = ay;
-    if (az > m) m = az;
-    if (m > 32767.0f) m = 32767.0f;
-    return (int16_t)m;
+    x = fabsf(x);
+    if (x > 32767.0f) x = 32767.0f;
+    return (int16_t)x;
+}
+
+static float Node127_GetRelativePitchDeg(void)
+{
+    return THIGH_PITCH_SIGN * (((float)g_node127.pitch_q6 - g_node127_pitch_bias) / NODE127_PITCH_Q);
 }
 
 static void Node127_ResetCalibration(uint32_t now)
@@ -1023,11 +1023,9 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node127_calib_start_tick = now;
     g_node127_calib_count = 0U;
     g_node127_gx_bias_sum = 0;
-    g_node127_gy_bias_sum = 0;
-    g_node127_gz_bias_sum = 0;
+    g_node127_pitch_bias_sum = 0;
     g_node127_gx_bias = 0.0f;
-    g_node127_gy_bias = 0.0f;
-    g_node127_gz_bias = 0.0f;
+    g_node127_pitch_bias = 0.0f;
     g_node127_emg_baseline_valid = 0U;
     g_node127_emg_baseline = 0.0f;
     g_node127_emg_norm = 0.0f;
@@ -1044,8 +1042,10 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node124_ignore_until_tick = now + NODE124_START_IGNORE_MS;
     g_node127_first_motion_seen = 0U;
     g_gait_amp_state = 0.0f;
-    g_gait_phase_speed_state = 0.0f;
     g_node127_phase_pct = GAIT_START_PHASE_PCT;
+    g_node127_last_phase_pitch_deg = 0.0f;
+    g_node127_last_phase_sequence = 0U;
+    g_node127_last_imu_motion_tick = 0U;
     g_node127_still_start_tick = 0U;
     g_node127_emg_on_start_tick = 0U;
     g_node127_last_stop_tick = now;
@@ -1073,8 +1073,7 @@ static uint8_t Node127_RunCalibration(uint32_t now)
 
     g_node127_ctrl_state = NODE127_STATE_CALIB;
     g_node127_gx_bias_sum += (int32_t)g_node127.gx;
-    g_node127_gy_bias_sum += (int32_t)g_node127.gy;
-    g_node127_gz_bias_sum += (int32_t)g_node127.gz;
+    g_node127_pitch_bias_sum += (int32_t)g_node127.pitch_q6;
     g_node127_calib_count++;
 
     if (g_node127_emg_baseline_valid == 0U) {
@@ -1098,8 +1097,9 @@ static uint8_t Node127_RunCalibration(uint32_t now)
 
     if (((now - g_node127_calib_start_tick) >= NODE127_CALIB_MS) && (g_node127_calib_count >= 20U)) {
         g_node127_gx_bias = (float)g_node127_gx_bias_sum / (float)g_node127_calib_count;
-        g_node127_gy_bias = (float)g_node127_gy_bias_sum / (float)g_node127_calib_count;
-        g_node127_gz_bias = (float)g_node127_gz_bias_sum / (float)g_node127_calib_count;
+        g_node127_pitch_bias = (float)g_node127_pitch_bias_sum / (float)g_node127_calib_count;
+        g_node127_last_phase_pitch_deg = 0.0f;
+        g_node127_last_phase_sequence = g_node127.sample_sequence;
         g_node127_calibrated = 1U;
         g_node127_ctrl_state = NODE127_STATE_IDLE;
         g_node127_motion_active = 0U;
@@ -1196,6 +1196,7 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
     float intent_target;
     uint8_t peak_detected;
     uint8_t peak_window_active;
+    uint8_t imu_moving;
 
     if (!Node127_DataFresh(now)) {
         g_node127_ctrl_state = NODE127_STATE_LOST;
@@ -1213,9 +1214,15 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
 
     Node127_EmgUpdate(now);
 
-    gyro_abs = (float)Node127_GetMaxAbsGyroRaw();
+    gyro_abs = (float)Node127_GetAbsPitchRateRaw();
     gyro_active = (gyro_abs - NODE127_GYRO_DEADBAND_RAW) / NODE127_GYRO_FULL_RAW;
     gyro_active = clampf_local(gyro_active, 0.0f, 1.0f);
+    if (((g_node127.motion_flags & NODE127_IMU_MOVING_FLAG) != 0U) ||
+        (gyro_abs >= NODE127_GYRO_DEADBAND_RAW)) {
+        g_node127_last_imu_motion_tick = now;
+    }
+    imu_moving = ((g_node127_last_imu_motion_tick != 0U) &&
+                  ((now - g_node127_last_imu_motion_tick) <= NODE127_MOTION_HOLD_MS)) ? 1U : 0U;
     emg_active = Node127_EmgNorm(now);
     emg_raw = (float)g_node127.emg;
     if ((int32_t)(now - g_node124_ignore_until_tick) < 0) {
@@ -1263,6 +1270,13 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
         g_node127_emg_on_start_tick = 0U;
         g_node127_last_stop_tick = now;
         g_node127_ctrl_state = g_node127_first_motion_seen ? NODE127_STATE_HOLD : NODE127_STATE_IDLE;
+        return 0U;
+    }
+
+    if (imu_moving == 0U) {
+        g_node127_motion_active = 0U;
+        g_node127_motion_level = 0.0f;
+        g_node127_ctrl_state = NODE127_STATE_HOLD;
         return 0U;
     }
 
@@ -1693,15 +1707,11 @@ void App_RunOnce(void) {
                 float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
                 float amp_target;
                 float amp_step;
-                float phase_speed_target;
                 float motion_drive;
+                float thigh_pitch_deg;
+                float pitch_delta_deg;
 
-                /*
- * 三关节协调核心：
- * 1. 髋、膝、踝共用 g_node127_phase_pct，保证相位一致。
- * 2. 共用 g_gait_amp_state，控制步态幅值平滑变化。
- * 3. 各关节曲线保留人体步态中的先后关系。
- */
+                /* Pitch drives the hip directly; accumulated thigh travel drives knee/ankle phase. */
                 motion_drive = clampf_local((0.75f * g_node127_intent_level) + (0.25f * g_node127_motion_level), 0.0f, 1.0f);
                 amp_target = GAIT_AMP_MIN_SCALE +
                     (GAIT_AMP_MAX_SCALE - GAIT_AMP_MIN_SCALE) * motion_drive;
@@ -1716,20 +1726,24 @@ void App_RunOnce(void) {
                     if (g_gait_amp_state < amp_target) g_gait_amp_state = amp_target;
                 }
 
-                phase_speed_target = NODE127_PHASE_MIN_SPEED +
-                    (NODE127_PHASE_MAX_SPEED - NODE127_PHASE_MIN_SPEED) * motion_drive;
-                if (g_gait_phase_speed_state <= 1.0f) {
-                    g_gait_phase_speed_state = phase_speed_target;
-                } else {
-                    g_gait_phase_speed_state += GAIT_PHASE_SPEED_LPF_ALPHA *
-                        (phase_speed_target - g_gait_phase_speed_state);
+                thigh_pitch_deg = Node127_GetRelativePitchDeg();
+                if (g_node127.sample_sequence != g_node127_last_phase_sequence) {
+                    pitch_delta_deg = fabsf(thigh_pitch_deg - g_node127_last_phase_pitch_deg);
+                    if (pitch_delta_deg > THIGH_PHASE_MAX_DELTA_DEG) {
+                        pitch_delta_deg = THIGH_PHASE_MAX_DELTA_DEG;
+                    }
+                    if (pitch_delta_deg >= THIGH_PHASE_NOISE_DEG) {
+                        g_node127_phase_pct = wrap_phase_pct(
+                            g_node127_phase_pct + pitch_delta_deg * THIGH_PHASE_PCT_PER_DEG);
+                    }
+                    g_node127_last_phase_pitch_deg = thigh_pitch_deg;
+                    g_node127_last_phase_sequence = g_node127.sample_sequence;
                 }
-                g_node127_phase_pct = wrap_phase_pct(g_node127_phase_pct + g_gait_phase_speed_state * dt_s);
 
                 Joint_PrepareRunRelative(&knee, g_node127_phase_pct);
                 Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
 
-                Joint_PrepareRunRelative(&hip, g_node127_phase_pct);
+                Joint_PrepareFollowRelative(&hip, thigh_pitch_deg * THIGH_PITCH_GAIN);
                 Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
             } else {
                 {
@@ -1737,8 +1751,6 @@ void App_RunOnce(void) {
                     float amp_decay_step = GAIT_AMP_DECAY_PER_S * dt_s;
                     if (g_gait_amp_state > amp_decay_step) g_gait_amp_state -= amp_decay_step;
                     else g_gait_amp_state = 0.0f;
-                    g_gait_phase_speed_state *= 0.75f;
-                    if (g_gait_phase_speed_state < 1.0f) g_gait_phase_speed_state = 0.0f;
                 }
                 /* 127 data lost or human stopped: phase freezes; gait drive decays. */
                 Joint_PrepareHoldLast(&knee);
@@ -1812,9 +1824,9 @@ static void Vofa_SendCanFrame(void) {
     uint16_t emg_front;
     uint16_t emg_lateral;
     uint16_t emg_rear;
+    int16_t pitch_q6;
     int16_t gx;
-    int16_t gy;
-    int16_t gz;
+    uint16_t motion_flags;
     uint32_t primask;
     uint8_t updated;
     int len;
@@ -1825,9 +1837,9 @@ static void Vofa_SendCanFrame(void) {
     emg_front = g_node127.emg_front_uv;
     emg_lateral = g_node127.emg_lateral_uv;
     emg_rear = g_node127.emg_rear_uv;
+    pitch_q6 = g_node127.pitch_q6;
     gx = g_node127.gx;
-    gy = g_node127.gy;
-    gz = g_node127.gz;
+    motion_flags = g_node127.motion_flags;
     g_node127.updated = 0U;
     if (primask == 0U) {
         __enable_irq();
@@ -1835,12 +1847,12 @@ static void Vofa_SendCanFrame(void) {
 
     if ((updated == 0U) || (huart3.Instance != USART3)) return;
 
-    /* VOFA FireWater: front EMG, lateral EMG, rear EMG, gx, gy, gz. */
+    /* VOFA FireWater: front/lateral/rear EMG, pitch Q6, gyro X Q6, flags. */
     len = snprintf(tx, sizeof(tx), "%u,%u,%u,%d,%d,%d\r\n",
                    (unsigned int)emg_front,
                    (unsigned int)emg_lateral,
                    (unsigned int)emg_rear,
-                   (int)gx, (int)gy, (int)gz);
+                   (int)pitch_q6, (int)gx, (int)motion_flags);
     if (len > 0) {
         if (len >= (int)sizeof(tx)) len = (int)sizeof(tx) - 1;
         (void)HAL_UART_Transmit(&huart3, (uint8_t *)tx, (uint16_t)len, 30U);

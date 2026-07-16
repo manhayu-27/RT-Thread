@@ -26,9 +26,11 @@ typedef struct {
     volatile uint16_t emg_lateral_uv;
     volatile uint16_t emg_rear_uv;
     volatile uint16_t sample_sequence;
+    volatile int16_t pitch_q6;
     volatile int16_t gx;
     volatile int16_t gy;
     volatile int16_t gz;
+    volatile uint16_t motion_flags;
     volatile int16_t ax;
     volatile int16_t ay;
     volatile int16_t az;

@@ -39,9 +39,12 @@
 
 #define SENSOR_CAN_SYNC_ID      0x010U
 #define SENSOR_CAN_EMG_ID       127U
-#define SENSOR_CAN_GYRO_ID      227U
+#define SENSOR_CAN_MOTION_ID    227U
 #define SENSOR_CAN_WINDOW_SIZE  5U
-#define SENSOR_CAN_GYRO_Q       64.0f
+#define SENSOR_CAN_ANGLE_Q      64.0f
+#define SENSOR_CAN_MOVING_DPS   5.0f
+#define SENSOR_CAN_FLAG_MOVING  0x0001U
+#define SENSOR_CAN_FLAG_FALL    0x0002U
 
 static volatile uint8_t sensor_can_sync_pending;
 static uint16_t sensor_can_sequence;
@@ -98,10 +101,12 @@ static void sensor_can_send(uint32_t std_id, const uint8_t data[8])
 static void sensor_can_publish(float ch2_uv,
                                float ch3_uv,
                                float ch4_uv,
-                               const bmi088_motion_data_t *motion)
+                               const bmi088_motion_data_t *motion,
+                               uint8_t fall)
 {
     uint8_t emg_data[8] = {0U};
-    uint8_t gyro_data[8] = {0U};
+    uint8_t motion_data[8] = {0U};
+    uint16_t motion_flags = 0U;
 
     if ((sensor_can_sync_pending == 0U) || (motion == RT_NULL))
     {
@@ -115,13 +120,21 @@ static void sensor_can_publish(float ch2_uv,
     put_u16_be(&emg_data[4], saturate_u16(ch3_uv));
     put_u16_be(&emg_data[6], saturate_u16(ch4_uv));
 
-    put_u16_be(&gyro_data[0], sensor_can_sequence);
-    put_u16_be(&gyro_data[2], (uint16_t)saturate_i16(motion->gyro.x_dps * SENSOR_CAN_GYRO_Q));
-    put_u16_be(&gyro_data[4], (uint16_t)saturate_i16(motion->gyro.y_dps * SENSOR_CAN_GYRO_Q));
-    put_u16_be(&gyro_data[6], (uint16_t)saturate_i16(motion->gyro.z_dps * SENSOR_CAN_GYRO_Q));
+    if (fabsf(motion->gyro.x_dps) >= SENSOR_CAN_MOVING_DPS)
+    {
+        motion_flags |= SENSOR_CAN_FLAG_MOVING;
+    }
+    if (fall != 0U)
+    {
+        motion_flags |= SENSOR_CAN_FLAG_FALL;
+    }
+    put_u16_be(&motion_data[0], sensor_can_sequence);
+    put_u16_be(&motion_data[2], (uint16_t)saturate_i16(motion->pitch_deg * SENSOR_CAN_ANGLE_Q));
+    put_u16_be(&motion_data[4], (uint16_t)saturate_i16(motion->gyro.x_dps * SENSOR_CAN_ANGLE_Q));
+    put_u16_be(&motion_data[6], motion_flags);
 
     sensor_can_send(SENSOR_CAN_EMG_ID, emg_data);
-    sensor_can_send(SENSOR_CAN_GYRO_ID, gyro_data);
+    sensor_can_send(SENSOR_CAN_MOTION_ID, motion_data);
 }
 
 static int sensor_can_init(void)
@@ -145,7 +158,7 @@ static int sensor_can_init(void)
         return -1;
     }
 
-    uart1_send_text("SENSOR_CAN_READY,1000000,ID127_EMG,ID227_GYRO\r\n");
+    uart1_send_text("SENSOR_CAN_READY,1000000,ID127_EMG,ID227_PITCH_MOTION\r\n");
     return 0;
 }
 
@@ -403,7 +416,8 @@ static void ads1194_read_one_frame(uint32_t *sample_count)
             sensor_can_publish(sensor_can_emg_sum_uv[0] / (float)SENSOR_CAN_WINDOW_SIZE,
                                sensor_can_emg_sum_uv[1] / (float)SENSOR_CAN_WINDOW_SIZE,
                                sensor_can_emg_sum_uv[2] / (float)SENSOR_CAN_WINDOW_SIZE,
-                               &motion);
+                               &motion,
+                               fall);
         }
         sensor_can_emg_sum_uv[0] = 0.0f;
         sensor_can_emg_sum_uv[1] = 0.0f;

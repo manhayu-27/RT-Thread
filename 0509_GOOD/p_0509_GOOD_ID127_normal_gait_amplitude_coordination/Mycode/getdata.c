@@ -132,7 +132,7 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
 
     /* Acquisition board protocol. ID127 and ID227 form one atomic sample pair.
      * ID127: sequence, front/lateral/rear thigh EMG MAV in uV.
-     * ID227: same sequence, BMI088 gx/gy/gz in Q6 degrees/s.
+     * ID227: same sequence, thigh pitch Q6 deg, gyro X Q6 deg/s, motion flags.
      */
     if ((buf == NULL) || (dlc < 8U)) return;
     if ((std_id != 127U) && (std_id != 227U)) {
@@ -163,9 +163,11 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
         g_node127.emg = max_u16_3(pending_emg_front_uv,
                                  pending_emg_lateral_uv,
                                  pending_emg_rear_uv);
-        g_node127.gx = read_i16_be(&buf[2]);
-        g_node127.gy = read_i16_be(&buf[4]);
-        g_node127.gz = read_i16_be(&buf[6]);
+        g_node127.pitch_q6 = read_i16_be(&buf[2]);
+        g_node127.gx = read_i16_be(&buf[4]);
+        g_node127.gy = 0;
+        g_node127.gz = 0;
+        g_node127.motion_flags = read_u16_be(&buf[6]);
         g_node127.ax = 0;
         g_node127.ay = 0;
         g_node127.az = 0;

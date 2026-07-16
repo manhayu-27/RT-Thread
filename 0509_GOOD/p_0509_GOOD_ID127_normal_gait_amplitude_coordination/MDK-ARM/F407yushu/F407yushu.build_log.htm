@@ -27,7 +27,20 @@ Project File Date:  07/16/2026
 <h2>Output:</h2>
 *** Using Compiler 'V5.06 update 5 (build 528)', folder: 'D:\software\keil\ARM\ARMCC\Bin'
 Build target 'F407yushu'
-"F407yushu\F407yushu.axf" - 0 Error(s), 0 Warning(s).
+compiling app.c...
+..\Mycode\app.c(249): warning:  #550-D: variable "g_node127_last_motion_tick"  was set but never used
+  static uint32_t g_node127_last_motion_tick = 0U;
+..\Mycode\app.c(279): warning:  #550-D: variable "g_node127_still_start_tick"  was set but never used
+  static uint32_t g_node127_still_start_tick = 0U;
+..\Mycode\app.c(280): warning:  #550-D: variable "g_node127_emg_on_start_tick"  was set but never used
+  static uint32_t g_node127_emg_on_start_tick = 0U;
+..\Mycode\app.c(281): warning:  #550-D: variable "g_node127_last_stop_tick"  was set but never used
+  static uint32_t g_node127_last_stop_tick = 0U;
+..\Mycode\app.c: 4 warnings, 0 errors
+linking...
+Program Size: Code=26088 RO-data=2056 RW-data=284 ZI-data=10988  
+FromELF: creating hex file...
+"F407yushu\F407yushu.axf" - 0 Error(s), 4 Warning(s).
 
 <h2>Software Packages used:</h2>
 
@@ -50,7 +63,7 @@ Package Vendor: Keil
 
    * Component: ARM::CMSIS:CORE@6.1.0
       Include file:  CMSIS/Core/Include/tz_context.h
-Build Time Elapsed:  00:00:01
+Build Time Elapsed:  00:00:02
 </pre>
 </body>
 </html>

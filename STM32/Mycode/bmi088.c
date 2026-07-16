@@ -37,6 +37,7 @@
 #define BMI088_DEBUG_STREAM_ENABLE  0U
 #define BMI088_PRINT_INTERVAL_MS    10U
 #define BMI088_RAD_TO_DEG           57.2957795f
+#define BMI088_PITCH_ACCEL_ALPHA    0.02f
 #define BMI088_FALL_FLEX_DEG        45.0f
 #define BMI088_FALL_Y_G             0.70f
 #define BMI088_FALL_FREE_G_SQ       (0.60f * 0.60f)
@@ -450,10 +451,11 @@ static void calc_euler_deg(const bmi088_accel_data_t *accel,
                            float *pitch_deg,
                            float *yaw_deg)
 {
-    static uint8_t yaw_ready;
+    static uint8_t angle_ready;
     static uint32_t last_tick;
     uint32_t now_tick = rt_tick_get();
     float dt_s = 0.0f;
+    float accel_pitch_deg;
 
     if ((accel == RT_NULL) || (gyro == RT_NULL) ||
         (roll_deg == RT_NULL) || (pitch_deg == RT_NULL) || (yaw_deg == RT_NULL))
@@ -462,13 +464,16 @@ static void calc_euler_deg(const bmi088_accel_data_t *accel,
     }
 
     *roll_deg = atan2f(accel->x_g, -accel->y_g) * BMI088_RAD_TO_DEG;
-    *pitch_deg = atan2f(accel->z_g,
-                        sqrtf((accel->x_g * accel->x_g) +
-                              (accel->y_g * accel->y_g))) * BMI088_RAD_TO_DEG;
+    accel_pitch_deg = atan2f(accel->z_g,
+                             sqrtf((accel->x_g * accel->x_g) +
+                                   (accel->y_g * accel->y_g))) * BMI088_RAD_TO_DEG;
 
-    if (yaw_ready != 0U)
+    if (angle_ready != 0U)
     {
         dt_s = (float)(now_tick - last_tick) / (float)RT_TICK_PER_SECOND;
+        latest_pitch_deg = ((1.0f - BMI088_PITCH_ACCEL_ALPHA) *
+                            (latest_pitch_deg + gyro->x_dps * dt_s)) +
+                           (BMI088_PITCH_ACCEL_ALPHA * accel_pitch_deg);
         latest_yaw_deg += gyro->z_dps * dt_s;
         if (latest_yaw_deg > BMI088_HALF_CIRCLE_DEG)
         {
@@ -481,9 +486,11 @@ static void calc_euler_deg(const bmi088_accel_data_t *accel,
     }
     else
     {
-        yaw_ready = 1U;
+        latest_pitch_deg = accel_pitch_deg;
+        angle_ready = 1U;
     }
     last_tick = now_tick;
+    *pitch_deg = latest_pitch_deg;
     *yaw_deg = latest_yaw_deg;
 }
 
