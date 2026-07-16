@@ -25,32 +25,32 @@
 #define MOTOR_TEST_MODE            0
 
 #define CONTROL_PERIOD_MS          10U
-#define PRINT_PERIOD_MS            50U
+#define PRINT_PERIOD_MS            10U
 #define VOFA_ENABLE                1U
 
 /* ================= Node127 融合控制参数 =================
- * Node127 通过 CAN2（PB5/PB6）通信；主控每 2 ms 发送一次 0x010 同步帧。
- * 模块返回 ID=127（肌电和陀螺仪）以及 ID=227（加速度）数据。
+ * Node127 通过 CAN2（PB5/PB6）通信；主控每 10 ms 发送一次 0x010 同步帧。
+ * ID=127 发送三路大腿肌电，ID=227 发送同序号三轴角速度。
  */
 #define NODE127_SYNC_CAN_ID        0x010U
-#define NODE127_SYNC_PERIOD_MS     2U
-#define NODE127_DATA_TIMEOUT_MS    250U
+#define NODE127_SYNC_PERIOD_MS     10U
+#define NODE127_DATA_TIMEOUT_MS    100U
 #define NODE127_WARMUP_MS           3000U
-#define NODE127_EMG_TIMEOUT_MS     180U
+#define NODE127_EMG_TIMEOUT_MS     100U
 #define NODE127_EMG_LPF_ALPHA      0.18f   /* legacy default, kept for compatibility with older notes */
 #define NODE127_EMG_ATTACK_ALPHA   0.80f   /* fast envelope attack: human intent should start the gait quickly */
 #define NODE127_EMG_RELEASE_ALPHA  0.10f   /* slower release: filters single-sample dropouts without long motor overrun */
 #define NODE127_EMG_BASELINE_ALPHA 0.0008f
-#define NODE127_EMG_BASELINE_TRACK_RAW 25.0f  /* 静止时允许基线缓慢跟踪的最大漂移量。 */
-#define NODE127_EMG_DEADBAND_RAW   6.0f  /* 肌电死区：过滤静止状态下的基线漂移，避免误触发。 */
-#define NODE127_EMG_FULL_SCALE_RAW 25.0f /* 肌电归一化满量程，按127实际0~2048输出重新标定 */
-#define NODE127_GYRO_DEADBAND_RAW  250.0f
-#define NODE127_GYRO_FULL_RAW      3500.0f
+#define NODE127_EMG_BASELINE_TRACK_RAW 80.0f  /* uV MAV: only track baseline while idle. */
+#define NODE127_EMG_DEADBAND_RAW   20.0f  /* uV above the per-channel resting baseline. */
+#define NODE127_EMG_FULL_SCALE_RAW 300.0f /* uV active range; tune after subject calibration. */
+#define NODE127_GYRO_DEADBAND_RAW  320.0f  /* Q6: 5 degrees/s. */
+#define NODE127_GYRO_FULL_RAW      9600.0f /* Q6: another 150 degrees/s reaches full scale. */
 #define NODE127_MOTION_HOLD_MS     80U     /* short anti-jitter hold only */
 #define NODE127_PHASE_MIN_SPEED    90.0f   /* 正常步态相位速度下限，由肌电强度调节。 */
 #define NODE127_PHASE_MAX_SPEED    205.0f   /* 正常步态相位速度上限，防止步态运行过快。 */
 #define NODE127_GAIT_SCALE         1.0f
-#define NODE127_CALIB_MS            300U     /* 上电后采集 Node127 静止零偏，校准期间三个电机只保持。 */
+#define NODE127_CALIB_MS           1000U     /* Rest calibration; all motors hold during this time. */
 #define NODE127_MOVE_ON_GYRO_NORM   0.12f     /* 陀螺仪不单独触发运动，只参与运动强度计算。 */
 #define NODE127_MOVE_ON_EMG_NORM    0.170f    /* 肌电运动触发阈值，达到后才进入运动状态。 */
 #define NODE127_STOP_GYRO_NORM      0.030f    /* 停止时主要依据肌电，陀螺仪仅作为辅助量。 */
@@ -65,8 +65,8 @@
 #define NODE124_PEAK_RISE_NORM      0.075f
 #define NODE124_PEAK_MIN_NORM       0.140f
 #define NODE124_START_IGNORE_MS     1200U
-#define NODE124_EMG_START_RAW      14.0f
-#define NODE124_EMG_KEEP_RAW       10.0f
+#define NODE124_EMG_START_RAW      25.0f
+#define NODE124_EMG_KEEP_RAW       20.0f
 
 /* =============== 三关节协调与幅度限制参数 ===============
  * 髋、膝、踝共用同一个步态相位，不分别独立运行。
@@ -236,15 +236,15 @@ volatile uint32_t g_hardfault_count = 0U;
 
 /* Node127 运动状态：无运动时不推进相位，三个关节保持上一目标。 */
 static float g_node127_emg_baseline = 0.0f;
-static float g_node127_emg_env = 0.0f;
 static float g_node127_emg_norm = 0.0f;
-static float g_node127_emg_delta_raw = 0.0f;
+static float g_node127_emg_baseline_ch[3] = {0.0f, 0.0f, 0.0f};
+static float g_node127_emg_env_ch[3] = {0.0f, 0.0f, 0.0f};
+static float g_node127_emg_norm_ch[3] = {0.0f, 0.0f, 0.0f};
 static uint8_t g_node127_emg_baseline_valid = 0U;
 static uint8_t g_node127_motion_active = 0U;
 static uint32_t g_node127_last_motion_tick = 0U;
 static float g_node127_motion_level = 0.0f;
 static float g_node127_intent_level = 0.0f;
-static float g_node127_gyro_level = 0.0f;
 static float g_node124_prev_emg_norm = 0.0f;
 static uint32_t g_node124_last_peak_tick = 0U;
 static uint32_t g_node124_ignore_until_tick = 0U;
@@ -341,7 +341,7 @@ static float ankle_wave_safe_deg_from_percent(float gait_percent) {
 }
 
 /* --- 函数声明 --- */
-static void Vofa_SendFrame(const BMI088_t *imu, const MT6701_t *enc);
+static void Vofa_SendCanFrame(void);
 static void Diag_SendAlive(uint32_t now, uint32_t stage_code);
 static void Debug_WriteBufAll(const uint8_t *buf, uint16_t len, uint32_t timeout_ms);
 static void Debug_Uart3Printf(const char *fmt, ...);
@@ -950,9 +950,6 @@ static void Debug_WriteBufAll(const uint8_t *buf, uint16_t len, uint32_t timeout
 {
     if ((buf == NULL) || (len == 0U)) return;
 
-    if (huart3.Instance == USART3) {
-        (void)HAL_UART_Transmit(&huart3, (uint8_t *)buf, len, timeout_ms);
-    }
     if (huart2.Instance == USART2) {
         (void)HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, timeout_ms);
     }
@@ -1003,12 +1000,6 @@ static uint8_t Node127_DataFresh(uint32_t now)
     return ((now - g_node127.gyro_tick) <= NODE127_DATA_TIMEOUT_MS) ? 1U : 0U;
 }
 
-/* 默认使用 Y 轴作为主要运动轴。 */
-static int16_t Node127_GetPrimaryGyroRaw(void)
-{
-    return (int16_t)((float)g_node127.gy - g_node127_gy_bias);
-}
-
 static int16_t Node127_GetMaxAbsGyroRaw(void)
 {
     float x = (float)g_node127.gx - g_node127_gx_bias;
@@ -1026,6 +1017,8 @@ static int16_t Node127_GetMaxAbsGyroRaw(void)
 
 static void Node127_ResetCalibration(uint32_t now)
 {
+    uint8_t channel;
+
     g_node127_calibrated = 0U;
     g_node127_calib_start_tick = now;
     g_node127_calib_count = 0U;
@@ -1037,13 +1030,15 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node127_gz_bias = 0.0f;
     g_node127_emg_baseline_valid = 0U;
     g_node127_emg_baseline = 0.0f;
-    g_node127_emg_env = 0.0f;
     g_node127_emg_norm = 0.0f;
-    g_node127_emg_delta_raw = 0.0f;
+    for (channel = 0U; channel < 3U; channel++) {
+        g_node127_emg_baseline_ch[channel] = 0.0f;
+        g_node127_emg_env_ch[channel] = 0.0f;
+        g_node127_emg_norm_ch[channel] = 0.0f;
+    }
     g_node127_motion_active = 0U;
     g_node127_motion_level = 0.0f;
     g_node127_intent_level = 0.0f;
-    g_node127_gyro_level = 0.0f;
     g_node124_prev_emg_norm = 0.0f;
     g_node124_last_peak_tick = now - (NODE124_PEAK_HOLD_MS + 1U);
     g_node124_ignore_until_tick = now + NODE124_START_IGNORE_MS;
@@ -1060,6 +1055,13 @@ static void Node127_ResetCalibration(uint32_t now)
 /* Node127 静止标定只在收到 ID=127 时累计，掉线时保持原状态。 */
 static uint8_t Node127_RunCalibration(uint32_t now)
 {
+    const float emg_raw[3] = {
+        (float)g_node127.emg_front_uv,
+        (float)g_node127.emg_lateral_uv,
+        (float)g_node127.emg_rear_uv
+    };
+    uint8_t channel;
+
     if (g_node127_calib_start_tick == 0U) {
         Node127_ResetCalibration(now);
     }
@@ -1076,10 +1078,22 @@ static uint8_t Node127_RunCalibration(uint32_t now)
     g_node127_calib_count++;
 
     if (g_node127_emg_baseline_valid == 0U) {
-        g_node127_emg_baseline = (float)g_node127.emg;
+        for (channel = 0U; channel < 3U; channel++) {
+            g_node127_emg_baseline_ch[channel] = emg_raw[channel];
+        }
         g_node127_emg_baseline_valid = 1U;
     } else {
-        g_node127_emg_baseline += 0.02f * ((float)g_node127.emg - g_node127_emg_baseline);
+        for (channel = 0U; channel < 3U; channel++) {
+            g_node127_emg_baseline_ch[channel] +=
+                0.02f * (emg_raw[channel] - g_node127_emg_baseline_ch[channel]);
+        }
+    }
+    g_node127_emg_baseline = g_node127_emg_baseline_ch[0];
+    if (g_node127_emg_baseline_ch[1] > g_node127_emg_baseline) {
+        g_node127_emg_baseline = g_node127_emg_baseline_ch[1];
+    }
+    if (g_node127_emg_baseline_ch[2] > g_node127_emg_baseline) {
+        g_node127_emg_baseline = g_node127_emg_baseline_ch[2];
     }
 
     if (((now - g_node127_calib_start_tick) >= NODE127_CALIB_MS) && (g_node127_calib_count >= 20U)) {
@@ -1106,39 +1120,61 @@ static uint8_t Node127_RunCalibration(uint32_t now)
 
 static void Node127_EmgUpdate(uint32_t now)
 {
-    float raw;
+    const float raw[3] = {
+        (float)g_node127.emg_front_uv,
+        (float)g_node127.emg_lateral_uv,
+        (float)g_node127.emg_rear_uv
+    };
     float diff;
     float active_raw;
     float alpha;
+    uint8_t channel;
+    uint8_t max_channel = 0U;
 
     if ((g_node127.gyro_valid == 0U) || ((now - g_node127.gyro_tick) > NODE127_EMG_TIMEOUT_MS)) {
         g_node127_emg_norm = 0.0f;
-        g_node127_emg_env *= 0.82f;
+        for (channel = 0U; channel < 3U; channel++) {
+            g_node127_emg_env_ch[channel] *= 0.82f;
+            g_node127_emg_norm_ch[channel] = 0.0f;
+        }
         return;
     }
 
-    raw = (float)g_node127.emg;
     if (g_node127_emg_baseline_valid == 0U) {
-        g_node127_emg_baseline = raw;
-        g_node127_emg_env = 0.0f;
+        for (channel = 0U; channel < 3U; channel++) {
+            g_node127_emg_baseline_ch[channel] = raw[channel];
+            g_node127_emg_env_ch[channel] = 0.0f;
+            g_node127_emg_norm_ch[channel] = 0.0f;
+        }
+        g_node127_emg_baseline = raw[0];
         g_node127_emg_norm = 0.0f;
         g_node127_emg_baseline_valid = 1U;
         return;
     }
 
-    diff = fabsf(raw - g_node127_emg_baseline);
+    for (channel = 0U; channel < 3U; channel++) {
+        diff = fabsf(raw[channel] - g_node127_emg_baseline_ch[channel]);
+        if ((g_node127_motion_active == 0U) && (diff < NODE127_EMG_BASELINE_TRACK_RAW)) {
+            g_node127_emg_baseline_ch[channel] +=
+                NODE127_EMG_BASELINE_ALPHA * (raw[channel] - g_node127_emg_baseline_ch[channel]);
+            diff = fabsf(raw[channel] - g_node127_emg_baseline_ch[channel]);
+        }
 
-    if ((g_node127_motion_active == 0U) && (diff < NODE127_EMG_BASELINE_TRACK_RAW)) {
-        g_node127_emg_baseline += NODE127_EMG_BASELINE_ALPHA * (raw - g_node127_emg_baseline);
-        diff = fabsf(raw - g_node127_emg_baseline);
+        alpha = (diff > g_node127_emg_env_ch[channel]) ?
+            NODE127_EMG_ATTACK_ALPHA : NODE127_EMG_RELEASE_ALPHA;
+        g_node127_emg_env_ch[channel] +=
+            alpha * (diff - g_node127_emg_env_ch[channel]);
+        active_raw = g_node127_emg_env_ch[channel] - NODE127_EMG_DEADBAND_RAW;
+        if (active_raw < 0.0f) active_raw = 0.0f;
+        g_node127_emg_norm_ch[channel] =
+            clampf_local(active_raw / NODE127_EMG_FULL_SCALE_RAW, 0.0f, 1.0f);
+        if (g_node127_emg_norm_ch[channel] > g_node127_emg_norm_ch[max_channel]) {
+            max_channel = channel;
+        }
     }
 
-    g_node127_emg_delta_raw = diff;
-    alpha = (diff > g_node127_emg_env) ? NODE127_EMG_ATTACK_ALPHA : NODE127_EMG_RELEASE_ALPHA;
-    g_node127_emg_env += alpha * (diff - g_node127_emg_env);
-    active_raw = g_node127_emg_env - NODE127_EMG_DEADBAND_RAW;
-    if (active_raw < 0.0f) active_raw = 0.0f;
-    g_node127_emg_norm = clampf_local(active_raw / NODE127_EMG_FULL_SCALE_RAW, 0.0f, 1.0f);
+    g_node127_emg_norm = g_node127_emg_norm_ch[max_channel];
+    g_node127_emg_baseline = g_node127_emg_baseline_ch[max_channel];
 }
 static float Node127_EmgNorm(uint32_t now)
 {
@@ -1166,7 +1202,6 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
         g_node127_motion_active = 0U;
         g_node127_motion_level = 0.0f;
         g_node127_intent_level = 0.0f;
-        g_node127_gyro_level = 0.0f;
         g_node127_emg_on_start_tick = 0U;
         return 0U;
     }
@@ -1183,7 +1218,6 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
     gyro_active = clampf_local(gyro_active, 0.0f, 1.0f);
     emg_active = Node127_EmgNorm(now);
     emg_raw = (float)g_node127.emg;
-    g_node127_gyro_level = gyro_active;
     if ((int32_t)(now - g_node124_ignore_until_tick) < 0) {
         g_node124_prev_emg_norm = emg_active;
         g_node124_last_peak_tick = now - (NODE124_PEAK_HOLD_MS + 1U);
@@ -1768,107 +1802,48 @@ void App_RunOnce(void) {
 
             (void)BMI088_Update(&imu);
             (void)MT6701_Update(&enc);
-            Vofa_SendFrame(&imu, &enc);
+            Vofa_SendCanFrame();
         }
     }
 }
 
-static void Vofa_SendFrame(const BMI088_t *imu, const MT6701_t *enc) {
-    static char tx[768];
-    uint32_t now = HAL_GetTick();
-    long imu_gx_milli = 0, imu_gy_milli = 0, imu_gz_milli = 0;
-    long enc_deg_milli = 0;
-    long ankle_pos_milli = (long)(motor[ANKLE_MOTOR_ID].pos * 1000.0f);
-    long ankle_init_milli = (long)(motor[ANKLE_MOTOR_ID].init_pos * 1000.0f);
-    long ankle_cmd_deg_milli = (long)(g_ankle_cmd_deg * 1000.0f);
-    long ankle_cmd_turn_milli = (long)(g_ankle_cmd_turn * 1000.0f);
-    long emg_norm_milli = (long)(g_node127_emg_norm * 1000.0f);
-    long gyro_level_milli = (long)(g_node127_gyro_level * 1000.0f);
-    long phase_milli = (long)(g_node127_phase_pct * 1000.0f);
-    long gait_amp_milli = (long)(g_gait_amp_state * 1000.0f);
-    long gait_speed_milli = (long)(g_gait_phase_speed_state * 1000.0f);
-    long emg_delta_raw = (long)g_node127_emg_delta_raw;
-    long emg_baseline_raw = (long)g_node127_emg_baseline;
+static void Vofa_SendCanFrame(void) {
+    static char tx[96];
+    uint16_t emg_front;
+    uint16_t emg_lateral;
+    uint16_t emg_rear;
+    int16_t gx;
+    int16_t gy;
+    int16_t gz;
+    uint32_t primask;
+    uint8_t updated;
     int len;
 
-    if (imu != NULL) {
-        imu_gx_milli = (long)(imu->gyro_dps[0] * 1000.0f);
-        imu_gy_milli = (long)(imu->gyro_dps[1] * 1000.0f);
-        imu_gz_milli = (long)(imu->gyro_dps[2] * 1000.0f);
-    }
-    if (enc != NULL) {
-        enc_deg_milli = (long)(enc->angle_deg * 1000.0f);
+    primask = __get_PRIMASK();
+    __disable_irq();
+    updated = g_node127.updated;
+    emg_front = g_node127.emg_front_uv;
+    emg_lateral = g_node127.emg_lateral_uv;
+    emg_rear = g_node127.emg_rear_uv;
+    gx = g_node127.gx;
+    gy = g_node127.gy;
+    gz = g_node127.gz;
+    g_node127.updated = 0U;
+    if (primask == 0U) {
+        __enable_irq();
     }
 
-    /*
- * 9002 是纯整数 ASCII 诊断帧，避免依赖 Keil 的浮点 printf 支持。
- * 这样可以减少栈占用，并保证 VOFA 始终有输出。
- */
-    len = snprintf(tx, sizeof(tx),
-                   "9002,%lu,%ld,%ld,%ld,%u,%ld,%u,%u,%u,%u,%ld,%ld,%ld,%ld,%u,%u,%lu,%u,%u,%u,%lu,%lu,%d,%d,%d,%d,%d,%d,%u,%ld,%ld,%ld,%u,%lu,%lu,%lu,%lu,%lu,%u,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u,%u,%ld,%ld,%lu,%lu,%lu,%d,%ld,%ld\r\n",
-                   (unsigned long)now,
-                   imu_gx_milli,
-                   imu_gy_milli,
-                   imu_gz_milli,
-                   (imu != NULL) ? (unsigned int)imu->init_ok : 0U,
-                   enc_deg_milli,
-                   (enc != NULL) ? (unsigned int)enc->angle_raw : 0U,
-                   (enc != NULL) ? (unsigned int)enc->read_ok : 0U,
-                   (unsigned int)g_ankle_init_step,
-                   (unsigned int)g_ankle_init_result,
-                   ankle_pos_milli,
-                   ankle_init_milli,
-                   ankle_cmd_deg_milli,
-                   ankle_cmd_turn_milli,
-                   (unsigned int)g_ankle_gait_enable,
-                   (unsigned int)motor_axis_state[ANKLE_MOTOR_ID],
-                   (unsigned long)motor_axis_flags[ANKLE_MOTOR_ID],
-                   (unsigned int)motor_axis_error[ANKLE_MOTOR_ID],
-                   (unsigned int)motor_fb_valid[ANKLE_MOTOR_ID],
-                   (unsigned int)motor_hb_valid[ANKLE_MOTOR_ID],
-                   (unsigned long)g_can1_error_code,
-                   (unsigned long)g_can1_busoff_count,
-                   (int)g_node127.emg,
-                   (int)g_node127.gx,
-                   (int)g_node127.gy,
-                   (int)g_node127.gz,
-                   (int)g_node127.ax,
-                   (int)g_node127.ay,
-                   (unsigned int)g_node127.gyro_valid,
-                   emg_norm_milli,
-                   gyro_level_milli,
-                   phase_milli,
-                   (unsigned int)g_node127_motion_active,
-                   (unsigned long)g_node127_sync_count,
-                   (unsigned long)g_can2_rx_count,
-                   (unsigned long)g_can2_127_rx_count,
-                   (unsigned long)g_can2_227_rx_count,
-                   (unsigned long)g_can2_last_id,
-                   (unsigned int)g_node127_sync_last_status,
-                   (unsigned long)g_can2_busoff_count,
-                   (unsigned long)g_can2_tx_ok_count,
-                   (unsigned long)g_can2_tx_fail_count,
-                   (unsigned long)g_can2_tx_busy_count,
-                   (unsigned long)g_can2_tx_abort_count,
-                   (unsigned long)g_can2_tx_mailbox_free,
-                   (unsigned long)g_can2_esr_snapshot,
-                   (unsigned long)g_can2_msr_snapshot,
-                   (unsigned long)g_can2_state_snapshot,
-                   (unsigned long)g_node127_warmup_done,
-                   (unsigned long)g_boot_stage_code,
-                   (unsigned int)g_node127_ctrl_state,
-                   (unsigned int)g_node127_calibrated,
-                   gait_amp_milli,
-                   gait_speed_milli,
-                   (unsigned long)g_node127_rx_bus,
-                   (unsigned long)g_can1_127_rx_count,
-                   (unsigned long)g_can1_227_rx_count,
-                   (int)Node127_GetPrimaryGyroRaw(),
-                   emg_delta_raw,
-                   emg_baseline_raw);
+    if ((updated == 0U) || (huart3.Instance != USART3)) return;
+
+    /* VOFA FireWater: front EMG, lateral EMG, rear EMG, gx, gy, gz. */
+    len = snprintf(tx, sizeof(tx), "%u,%u,%u,%d,%d,%d\r\n",
+                   (unsigned int)emg_front,
+                   (unsigned int)emg_lateral,
+                   (unsigned int)emg_rear,
+                   (int)gx, (int)gy, (int)gz);
     if (len > 0) {
-        if (len > (int)sizeof(tx)) len = (int)sizeof(tx);
-        Debug_WriteBufAll((uint8_t *)tx, (uint16_t)len, 30U);
+        if (len >= (int)sizeof(tx)) len = (int)sizeof(tx) - 1;
+        (void)HAL_UART_Transmit(&huart3, (uint8_t *)tx, (uint16_t)len, 30U);
     }
 }
 

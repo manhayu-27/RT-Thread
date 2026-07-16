@@ -1,5 +1,6 @@
 #include <rtthread.h>
 #include "main.h"
+#include "can.h"
 #include "spi.h"
 #include "usart.h"
 #include "bmi088.h"
@@ -7,6 +8,7 @@
 #include "filter.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define ADS1194_CMD_WAKEUP      0x02U
 #define ADS1194_CMD_STANDBY     0x04U
@@ -34,6 +36,118 @@
 #define ADS1194_UART_DECIMATE   1U
 #define ADS1194_VREF_MV         2400.0f
 #define ADS1194_GAIN            12.0f
+
+#define SENSOR_CAN_SYNC_ID      0x010U
+#define SENSOR_CAN_EMG_ID       127U
+#define SENSOR_CAN_GYRO_ID      227U
+#define SENSOR_CAN_WINDOW_SIZE  5U
+#define SENSOR_CAN_GYRO_Q       64.0f
+
+static volatile uint8_t sensor_can_sync_pending;
+static uint16_t sensor_can_sequence;
+static float sensor_can_emg_sum_uv[3];
+static uint8_t sensor_can_window_count;
+
+static void uart1_send_text(const char *text);
+
+static uint16_t saturate_u16(float value)
+{
+    if (value <= 0.0f)
+    {
+        return 0U;
+    }
+    if (value >= 65535.0f)
+    {
+        return 65535U;
+    }
+    return (uint16_t)(value + 0.5f);
+}
+
+static int16_t saturate_i16(float value)
+{
+    if (value <= -32768.0f)
+    {
+        return (int16_t)-32768;
+    }
+    if (value >= 32767.0f)
+    {
+        return 32767;
+    }
+    return (int16_t)((value >= 0.0f) ? (value + 0.5f) : (value - 0.5f));
+}
+
+static void put_u16_be(uint8_t *dst, uint16_t value)
+{
+    dst[0] = (uint8_t)(value >> 8U);
+    dst[1] = (uint8_t)value;
+}
+
+static void sensor_can_send(uint32_t std_id, const uint8_t data[8])
+{
+    CAN_TxHeaderTypeDef header = {0};
+    uint32_t mailbox;
+
+    header.StdId = std_id;
+    header.IDE = CAN_ID_STD;
+    header.RTR = CAN_RTR_DATA;
+    header.DLC = 8U;
+    header.TransmitGlobalTime = DISABLE;
+    (void)HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox);
+}
+
+static void sensor_can_publish(float ch2_uv,
+                               float ch3_uv,
+                               float ch4_uv,
+                               const bmi088_motion_data_t *motion)
+{
+    uint8_t emg_data[8] = {0U};
+    uint8_t gyro_data[8] = {0U};
+
+    if ((sensor_can_sync_pending == 0U) || (motion == RT_NULL))
+    {
+        return;
+    }
+    sensor_can_sync_pending = 0U;
+    sensor_can_sequence++;
+
+    put_u16_be(&emg_data[0], sensor_can_sequence);
+    put_u16_be(&emg_data[2], saturate_u16(ch2_uv));
+    put_u16_be(&emg_data[4], saturate_u16(ch3_uv));
+    put_u16_be(&emg_data[6], saturate_u16(ch4_uv));
+
+    put_u16_be(&gyro_data[0], sensor_can_sequence);
+    put_u16_be(&gyro_data[2], (uint16_t)saturate_i16(motion->gyro.x_dps * SENSOR_CAN_GYRO_Q));
+    put_u16_be(&gyro_data[4], (uint16_t)saturate_i16(motion->gyro.y_dps * SENSOR_CAN_GYRO_Q));
+    put_u16_be(&gyro_data[6], (uint16_t)saturate_i16(motion->gyro.z_dps * SENSOR_CAN_GYRO_Q));
+
+    sensor_can_send(SENSOR_CAN_EMG_ID, emg_data);
+    sensor_can_send(SENSOR_CAN_GYRO_ID, gyro_data);
+}
+
+static int sensor_can_init(void)
+{
+    CAN_FilterTypeDef filter = {0};
+
+    filter.FilterBank = 0U;
+    filter.FilterMode = CAN_FILTERMODE_IDMASK;
+    filter.FilterScale = CAN_FILTERSCALE_32BIT;
+    filter.FilterIdHigh = (uint32_t)(SENSOR_CAN_SYNC_ID << 5U);
+    filter.FilterMaskIdHigh = (uint32_t)(0x7FFU << 5U);
+    filter.FilterFIFOAssignment = CAN_FILTER_FIFO0;
+    filter.FilterActivation = ENABLE;
+    filter.SlaveStartFilterBank = 14U;
+
+    if ((HAL_CAN_ConfigFilter(&hcan1, &filter) != HAL_OK) ||
+        (HAL_CAN_Start(&hcan1) != HAL_OK) ||
+        (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK))
+    {
+        uart1_send_text("SENSOR_CAN_ERROR,INIT\r\n");
+        return -1;
+    }
+
+    uart1_send_text("SENSOR_CAN_READY,1000000,ID127_EMG,ID227_GYRO\r\n");
+    return 0;
+}
 
 static void uart1_send_text(const char *text)
 {
@@ -248,6 +362,7 @@ static void ads1194_read_one_frame(uint32_t *sample_count)
     uint8_t rx[ADS1194_FRAME_BYTES + 1U] = {0U};
     const uint8_t *frame = &rx[1];
     bmi088_motion_data_t motion = {0};
+    uint8_t motion_valid;
     uint8_t fall = 0U;
     char line[160];
     float ch1;
@@ -271,16 +386,35 @@ static void ads1194_read_one_frame(uint32_t *sample_count)
     }
 
     (*sample_count)++;
-    if ((*sample_count % ADS1194_UART_DECIMATE) != 0U)
-    {
-        return;
-    }
-
     ch1 = filter_process_sample_channel(0U, ads1194_code_to_mv(ads1194_decode_ch(frame, 0U)));
     ch2 = filter_process_sample_channel(1U, ads1194_code_to_mv(ads1194_decode_ch(frame, 1U)));
     ch3 = filter_process_sample_channel(2U, ads1194_code_to_mv(ads1194_decode_ch(frame, 2U)));
     ch4 = filter_process_sample_channel(3U, ads1194_code_to_mv(ads1194_decode_ch(frame, 3U)));
-    (void)bmi088_get_latest_state(&motion, &fall);
+    motion_valid = bmi088_get_latest_state(&motion, &fall);
+
+    sensor_can_emg_sum_uv[0] += fabsf(ch2) * 1000.0f;
+    sensor_can_emg_sum_uv[1] += fabsf(ch3) * 1000.0f;
+    sensor_can_emg_sum_uv[2] += fabsf(ch4) * 1000.0f;
+    sensor_can_window_count++;
+    if (sensor_can_window_count >= SENSOR_CAN_WINDOW_SIZE)
+    {
+        if (motion_valid != 0U)
+        {
+            sensor_can_publish(sensor_can_emg_sum_uv[0] / (float)SENSOR_CAN_WINDOW_SIZE,
+                               sensor_can_emg_sum_uv[1] / (float)SENSOR_CAN_WINDOW_SIZE,
+                               sensor_can_emg_sum_uv[2] / (float)SENSOR_CAN_WINDOW_SIZE,
+                               &motion);
+        }
+        sensor_can_emg_sum_uv[0] = 0.0f;
+        sensor_can_emg_sum_uv[1] = 0.0f;
+        sensor_can_emg_sum_uv[2] = 0.0f;
+        sensor_can_window_count = 0U;
+    }
+
+    if ((*sample_count % ADS1194_UART_DECIMATE) != 0U)
+    {
+        return;
+    }
 
     (void)snprintf(line,
                    sizeof(line),
@@ -353,6 +487,9 @@ int eeg_raw_stream_init(void)
 {
     rt_thread_t tid;
 
+    /* CAN failure must not stop ADS1194 -> ESP32 streaming. */
+    (void)sensor_can_init();
+
     tid = rt_thread_create("ads1194t",
                            ads1194_test_thread,
                            RT_NULL,
@@ -372,4 +509,29 @@ int eeg_raw_stream_init(void)
 void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
 {
     (void)gpio_pin;
+}
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+    CAN_RxHeaderTypeDef header;
+    uint8_t data[8];
+
+    if ((hcan == RT_NULL) || (hcan->Instance != CAN1))
+    {
+        return;
+    }
+
+    while (HAL_CAN_GetRxFifoFillLevel(hcan, CAN_RX_FIFO0) > 0U)
+    {
+        if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) != HAL_OK)
+        {
+            break;
+        }
+        if ((header.IDE == CAN_ID_STD) &&
+            (header.RTR == CAN_RTR_DATA) &&
+            (header.StdId == SENSOR_CAN_SYNC_ID))
+        {
+            sensor_can_sync_pending = 1U;
+        }
+    }
 }

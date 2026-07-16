@@ -22,6 +22,10 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan);
 /* ---------------- 127模块(CAN2)数据与调试变量 ---------------- */
 typedef struct {
     volatile uint16_t emg;
+    volatile uint16_t emg_front_uv;
+    volatile uint16_t emg_lateral_uv;
+    volatile uint16_t emg_rear_uv;
+    volatile uint16_t sample_sequence;
     volatile int16_t gx;
     volatile int16_t gy;
     volatile int16_t gz;

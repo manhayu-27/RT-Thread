@@ -52,6 +52,17 @@ static int16_t read_i16_be(const uint8_t *p)
     return (int16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
 }
 
+static uint16_t read_u16_be(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | (uint16_t)p[1]);
+}
+
+static uint16_t max_u16_3(uint16_t a, uint16_t b, uint16_t c)
+{
+    uint16_t value = (a > b) ? a : b;
+    return (value > c) ? value : c;
+}
+
 static void HandleHeartbeat(uint8_t id, const uint8_t *RxData, uint8_t DLC)
 {
     if ((id >= MOTOR_CAN_MAX_NODE_ID) || (RxData == NULL) || (DLC < 8U)) {
@@ -79,8 +90,14 @@ static void HandleCAN1MotorFrame(uint32_t std_id, const uint8_t *buf, uint8_t dl
 
 static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf, uint8_t dlc)
 {
+    static uint16_t pending_sequence;
+    static uint16_t pending_emg_front_uv;
+    static uint16_t pending_emg_lateral_uv;
+    static uint16_t pending_emg_rear_uv;
+    static uint8_t pending_emg_valid;
     uint32_t now;
     uint16_t emg_mav;
+    uint16_t sequence;
 
     if ((buf == NULL) || (dlc < 2U)) return;
 
@@ -95,6 +112,9 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
     if ((std_id == NODE124_EMG_CAN_ID_PRIMARY) || (std_id == NODE124_EMG_CAN_ID_ALT)) {
         emg_mav = (uint16_t)(((uint16_t)buf[0] << 8) | (uint16_t)buf[1]);
         g_node127.emg = emg_mav;
+        g_node127.emg_front_uv = emg_mav;
+        g_node127.emg_lateral_uv = emg_mav;
+        g_node127.emg_rear_uv = emg_mav;
         g_node127.gx = 0;
         g_node127.gy = 0;
         g_node127.gz = 0;
@@ -110,31 +130,51 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
         return;
     }
 
-    /* Legacy ID127 module format, kept so the older board can still be tested. */
+    /* Acquisition board protocol. ID127 and ID227 form one atomic sample pair.
+     * ID127: sequence, front/lateral/rear thigh EMG MAV in uV.
+     * ID227: same sequence, BMI088 gx/gy/gz in Q6 degrees/s.
+     */
     if ((buf == NULL) || (dlc < 8U)) return;
     if ((std_id != 127U) && (std_id != 227U)) {
         return;
     }
 
     if (std_id == 127U) {
-        g_node127.emg = (uint16_t)(((uint16_t)buf[0] << 8) | (uint16_t)buf[1]);
-        g_node127.gx = read_i16_be(&buf[2]);
-        g_node127.gy = read_i16_be(&buf[4]);
-        g_node127.gz = read_i16_be(&buf[6]);
-        g_node127.gyro_valid = 1U;
-        g_node127.updated = 1U;
-        g_node127.gyro_tick = now;
-        g_node127.last_tick = now;
+        pending_sequence = read_u16_be(&buf[0]);
+        pending_emg_front_uv = read_u16_be(&buf[2]);
+        pending_emg_lateral_uv = read_u16_be(&buf[4]);
+        pending_emg_rear_uv = read_u16_be(&buf[6]);
+        pending_emg_valid = 1U;
         g_can2_127_rx_count++;
     }
     else if (std_id == 227U) {
-        g_node127.ax = read_i16_be(&buf[2]);
-        g_node127.ay = read_i16_be(&buf[4]);
-        g_node127.az = read_i16_be(&buf[6]);
-        g_node127.accel_valid = 1U;
-        g_node127.accel_tick = now;
+        sequence = read_u16_be(&buf[0]);
         g_node127.last_tick = now;
         g_can2_227_rx_count++;
+        if ((pending_emg_valid == 0U) || (sequence != pending_sequence)) {
+            pending_emg_valid = 0U;
+            return;
+        }
+
+        g_node127.sample_sequence = sequence;
+        g_node127.emg_front_uv = pending_emg_front_uv;
+        g_node127.emg_lateral_uv = pending_emg_lateral_uv;
+        g_node127.emg_rear_uv = pending_emg_rear_uv;
+        g_node127.emg = max_u16_3(pending_emg_front_uv,
+                                 pending_emg_lateral_uv,
+                                 pending_emg_rear_uv);
+        g_node127.gx = read_i16_be(&buf[2]);
+        g_node127.gy = read_i16_be(&buf[4]);
+        g_node127.gz = read_i16_be(&buf[6]);
+        g_node127.ax = 0;
+        g_node127.ay = 0;
+        g_node127.az = 0;
+        g_node127.gyro_valid = 1U;
+        g_node127.accel_valid = 0U;
+        g_node127.updated = 1U;
+        g_node127.gyro_tick = now;
+        g_node127.last_tick = now;
+        pending_emg_valid = 0U;
     }
 }
 static void USER_CAN_ProcessRx(CAN_HandleTypeDef *hcan)
