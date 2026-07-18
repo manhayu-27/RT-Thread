@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -31,8 +32,10 @@
 static const char *TAG = "ear_board";
 static const uart_port_t STM32_UART = UART_NUM_1;
 static const uart_port_t GPS_UART = UART_NUM_2;
+static const uart_port_t ASRPRO_UART = UART_NUM_0;
 #define STM32_UART_BAUD_RATE 1000000
 #define GPS_UART_BAUD_RATE 9600
+#define ASRPRO_UART_BAUD_RATE 9600
 #define LCD_SPI_HOST SPI3_HOST
 #define UI_WAVE_X0 0
 #define UI_WAVE_Y0 22
@@ -48,6 +51,9 @@ static const uart_port_t GPS_UART = UART_NUM_2;
 #define WEB_PAYLOAD_SIZE 3072U
 #define WEB_SAMPLE_FIELDS 12U
 #define WIFI_CONNECTED_BIT BIT0
+#define HEART_RATE_MIN_INTERVAL_US 300000LL
+#define HEART_RATE_MAX_INTERVAL_US 2000000LL
+#define HEART_RATE_STALE_US 3000000LL
 
 typedef struct {
     float ch1;
@@ -63,6 +69,15 @@ typedef struct {
     unsigned long satellites;
     double hdop;
 } gps_fix_t;
+
+typedef struct {
+    float envelope;
+    bool above_threshold;
+    int64_t last_peak_us;
+    int64_t intervals_us[4];
+    uint8_t interval_count;
+    uint8_t next_interval;
+} heart_rate_estimator_t;
 
 #define WAVEFORM_FIFO_LEN 512U
 
@@ -81,6 +96,9 @@ static volatile float latest_pitch_deg;
 static volatile float latest_yaw_deg;
 static volatile float latest_temperature_c;
 static volatile uint8_t latest_fall;
+static volatile uint16_t latest_heart_rate_bpm;
+static volatile int64_t latest_heart_peak_us;
+static volatile bool latest_vitals_valid;
 static volatile uint8_t ui_menu_index;
 static volatile bool ui_pause;
 static volatile bool ui_show_ch1 = true;
@@ -102,6 +120,63 @@ static uint64_t web_sequence;
 static uint64_t web_batch_seq_start;
 static int64_t web_batch_timestamp_us;
 static char web_payload[WEB_PAYLOAD_SIZE];
+static heart_rate_estimator_t heart_rate_estimator;
+
+static uint16_t heart_rate_estimator_update(heart_rate_estimator_t *estimator,
+                                            float ecg_mv,
+                                            int64_t now_us)
+{
+    const float magnitude = fabsf(ecg_mv);
+    const float threshold_floor = 0.03f;
+    float threshold;
+
+    if (estimator == NULL) {
+        return 0U;
+    }
+
+    estimator->envelope = (estimator->envelope * 0.995f) + (magnitude * 0.005f);
+    threshold = fmaxf(threshold_floor, estimator->envelope * 3.0f);
+    if (!estimator->above_threshold && magnitude >= threshold) {
+        const int64_t interval_us = now_us - estimator->last_peak_us;
+
+        estimator->above_threshold = true;
+        if (estimator->last_peak_us != 0 &&
+            interval_us >= HEART_RATE_MIN_INTERVAL_US &&
+            interval_us <= HEART_RATE_MAX_INTERVAL_US) {
+            int64_t total_us = 0;
+
+            estimator->intervals_us[estimator->next_interval] = interval_us;
+            estimator->next_interval = (uint8_t)((estimator->next_interval + 1U) % 4U);
+            if (estimator->interval_count < 4U) {
+                estimator->interval_count++;
+            }
+            for (uint8_t index = 0U; index < estimator->interval_count; ++index) {
+                total_us += estimator->intervals_us[index];
+            }
+            estimator->last_peak_us = now_us;
+            return (uint16_t)((60000000LL * estimator->interval_count + (total_us / 2LL)) /
+                              total_us);
+        }
+        if (estimator->last_peak_us == 0 || interval_us > HEART_RATE_MAX_INTERVAL_US) {
+            estimator->last_peak_us = now_us;
+        }
+    } else if (estimator->above_threshold && magnitude < threshold) {
+        estimator->above_threshold = false;
+    }
+    return 0U;
+}
+
+static void heart_rate_self_check(void)
+{
+    heart_rate_estimator_t estimator = {0};
+    uint16_t bpm = 0U;
+
+    for (int64_t time_us = 0; time_us <= 6000000LL; time_us += 2000LL) {
+        const bool peak = (time_us % 1000000LL) == 0 && time_us != 0;
+        bpm = heart_rate_estimator_update(&estimator, peak ? 1.0f : 0.0f, time_us);
+    }
+    assert(bpm >= 59U && bpm <= 61U);
+}
 
 static void waveform_fifo_push(float ch1, float ch2, float ch3, float ch4)
 {
@@ -854,6 +929,86 @@ static void init_stm32_uart(void)
     stm32_uart_send("ESP32,HELLO\r\n");
 }
 
+static void asrpro_uart_send(const char *text)
+{
+    if (text != NULL) {
+        (void)uart_write_bytes(ASRPRO_UART, text, strlen(text));
+    }
+}
+
+static void asrpro_send_vitals(const char *request)
+{
+    char response[48];
+    const int64_t now_us = esp_timer_get_time();
+    const bool heart_valid = latest_heart_rate_bpm != 0U &&
+                             (now_us - latest_heart_peak_us) <= HEART_RATE_STALE_US;
+    const long temperature_hundredths = lroundf(latest_temperature_c * 100.0f);
+
+    if (!latest_vitals_valid) {
+        asrpro_uart_send("ASR,DATA,NONE\n");
+    } else if (strcmp(request, "ASR,GET,TEMP") == 0) {
+        (void)snprintf(response, sizeof(response), "ASR,DATA,TEMP,%ld\n", temperature_hundredths);
+        asrpro_uart_send(response);
+    } else if (strcmp(request, "ASR,GET,HEART") == 0) {
+        (void)snprintf(response, sizeof(response), "ASR,DATA,HEART,%lu\n",
+                       heart_valid ? (unsigned long)latest_heart_rate_bpm * 100UL : 0UL);
+        asrpro_uart_send(response);
+    } else if (strcmp(request, "ASR,GET,ALL") == 0) {
+        (void)snprintf(response, sizeof(response), "ASR,DATA,ALL,%ld,%lu\n",
+                       temperature_hundredths,
+                       heart_valid ? (unsigned long)latest_heart_rate_bpm * 100UL : 0UL);
+        asrpro_uart_send(response);
+    }
+}
+
+static void asrpro_uart_task(void *arg)
+{
+    uint8_t data[32];
+    char line[48];
+    size_t line_length = 0U;
+
+    (void)arg;
+    while (true) {
+        const int length = uart_read_bytes(ASRPRO_UART, data, sizeof(data),
+                                           pdMS_TO_TICKS(100));
+
+        for (int index = 0; index < length; ++index) {
+            if (data[index] == '\n') {
+                if (line_length > 0U && line[line_length - 1U] == '\r') {
+                    line_length--;
+                }
+                line[line_length] = '\0';
+                asrpro_send_vitals(line);
+                line_length = 0U;
+            } else if (line_length < sizeof(line) - 1U) {
+                line[line_length++] = (char)data[index];
+            } else {
+                line_length = 0U;
+            }
+        }
+    }
+}
+
+static void init_asrpro_uart(void)
+{
+    const uart_config_t config = {
+        .baud_rate = ASRPRO_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    ESP_ERROR_CHECK(uart_driver_install(ASRPRO_UART, 256, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(ASRPRO_UART, &config));
+    ESP_ERROR_CHECK(uart_set_pin(ASRPRO_UART,
+                                 BOARD_ASRPRO_UART_TX_GPIO,
+                                 BOARD_ASRPRO_UART_RX_GPIO,
+                                 UART_PIN_NO_CHANGE,
+                                 UART_PIN_NO_CHANGE));
+}
+
 static void process_stm32_line(const char *line)
 {
     static const char ping_prefix[] = "STM32,PING,";
@@ -894,6 +1049,14 @@ static void process_stm32_line(const char *line)
             latest_yaw_deg = yaw;
             latest_temperature_c = temperature;
             latest_fall = fall;
+            latest_vitals_valid = true;
+            const uint16_t bpm = heart_rate_estimator_update(&heart_rate_estimator,
+                                                              ch1,
+                                                              esp_timer_get_time());
+            latest_heart_peak_us = heart_rate_estimator.last_peak_us;
+            if (bpm != 0U) {
+                latest_heart_rate_bpm = bpm;
+            }
             waveform_fifo_push(ch1, ch2, ch3, ch4);
             websocket_batch_push(ch1, ch2, ch3, ch4,
                                  gyro_x, gyro_y, gyro_z, fall,
@@ -1418,9 +1581,12 @@ static void encoder_task(void *arg)
 void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);
+    heart_rate_self_check();
     init_stm32_uart();
+    init_asrpro_uart();
     init_gps_uart();
     xTaskCreate(gps_uart_task, "gps_uart", 3072, NULL, 5, NULL);
+    xTaskCreate(asrpro_uart_task, "asrpro_uart", 2048, NULL, 5, NULL);
     init_wifi_sta();
     start_websocket_server();
 #if BOARD_ENABLE_WEB_TEST_SIGNAL

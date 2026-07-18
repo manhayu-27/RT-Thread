@@ -1,13 +1,113 @@
 #include "asr.h"
 extern "C"{ void * __dso_handle = 0 ;}
 #include "setup.h"
+#include "HardwareSerial.h"
+#include "asr_event.h"
+#include "asr_event.h"
 
 uint32_t snid;
+static volatile bool query_pending;
+static uint32_t query_started_ms;
 void ASR_CODE();
+void asrpro_uart_task();
 
 //{speak:小蝶-清新女声,vol:10,speed:10,platform:haohaodada}
 //{playid:10001,voice:欢迎使用语音助手，用天问五幺唤醒我。}
 //{playid:10002,voice:我退下了，用天问五幺唤醒我}
+//{playid:10003,voice:当前设备温度为}
+//{playid:10004,voice:摄氏度}
+//{playid:10005,voice:当前心率为}
+//{playid:10006,voice:次每分钟}
+//{playid:10007,voice:暂无有效心率数据}
+//{playid:10008,voice:暂未收到采集数据}
+//{playid:10009,voice:数据请求超时}
+// play_num() 使用的数字音频资源，ID 必须是 10084 至 10100。
+//{playid:10084,voice:零}
+//{playid:10085,voice:一}
+//{playid:10086,voice:二}
+//{playid:10087,voice:三}
+//{playid:10088,voice:四}
+//{playid:10089,voice:五}
+//{playid:10090,voice:六}
+//{playid:10091,voice:七}
+//{playid:10092,voice:八}
+//{playid:10093,voice:九}
+//{playid:10094,voice:十}
+//{playid:10095,voice:百}
+//{playid:10096,voice:千}
+//{playid:10097,voice:万}
+//{playid:10098,voice:亿}
+//{playid:10099,voice:负}
+//{playid:10100,voice:点}
+
+static void request_esp32(const char *request)
+{
+  query_pending = true;
+  query_started_ms = millis();
+  Serial.println(request);
+}
+
+static void speak_temperature(int32_t temperature_hundredths)
+{
+  enter_wakeup(10000);
+  play_audio(10003);
+  play_num((int64_t)temperature_hundredths, 1);
+  play_audio(10004);
+}
+
+static void speak_heart_rate(uint32_t heart_rate_hundredths)
+{
+  enter_wakeup(10000);
+  if (heart_rate_hundredths == 0U) {
+    play_audio(10007);
+    return;
+  }
+  play_audio(10005);
+  play_num((int64_t)heart_rate_hundredths, 1);
+  play_audio(10006);
+}
+
+static void handle_asrpro_frame(String frame)
+{
+  const String temperature_prefix = "ASR,DATA,TEMP,";
+  const String heart_prefix = "ASR,DATA,HEART,";
+  const String all_prefix = "ASR,DATA,ALL,";
+
+  frame.trim();
+  if (frame.startsWith("ASR,DATA,")) {
+    query_pending = false;
+  }
+  if (frame == "ASR,DATA,NONE") {
+    enter_wakeup(10000);
+    play_audio(10008);
+  } else if (frame.startsWith(temperature_prefix)) {
+    speak_temperature(frame.substring(temperature_prefix.length()).toInt());
+  } else if (frame.startsWith(heart_prefix)) {
+    speak_heart_rate((uint32_t)frame.substring(heart_prefix.length()).toInt());
+  } else if (frame.startsWith(all_prefix)) {
+    const int separator = frame.indexOf(',', all_prefix.length());
+
+    if (separator >= 0) {
+      speak_temperature(frame.substring(all_prefix.length(), separator).toInt());
+      speak_heart_rate((uint32_t)frame.substring(separator + 1).toInt());
+    }
+  }
+}
+
+void asrpro_uart_task()
+{
+  while (1) {
+    if (Serial.available() > 0) {
+      handle_asrpro_frame(Serial.readStringUntil('\n'));
+    }
+    if (query_pending && (uint32_t)(millis() - query_started_ms) > 1500U) {
+      query_pending = false;
+      enter_wakeup(10000);
+      play_audio(10009);
+    }
+    delay(10);
+  }
+}
 
 /*描述该功能...
 */
@@ -25,6 +125,15 @@ void ASR_CODE(){
    case 2:
     digitalWrite(4,1);
     break;
+   case 5:
+    request_esp32("ASR,GET,TEMP");
+    break;
+   case 6:
+    request_esp32("ASR,GET,HEART");
+    break;
+   case 7:
+    request_esp32("ASR,GET,ALL");
+    break;
   }
   //除了switch分支选择，也可用如果判断识别ID的值来执行动作
   if((snid) == 3){
@@ -41,6 +150,10 @@ void hardware_init(){
   //需要操作系统启动后初始化的内容
   //音量范围1-7
   vol_set(7);
+  setPinFun(13,SECOND_FUNCTION);
+  setPinFun(14,SECOND_FUNCTION);
+  Serial.begin(9600);
+  xTaskCreate(asrpro_uart_task,"asrpro_uart",256,NULL,4,NULL);
   vTaskDelete(NULL);
 }
 
@@ -56,9 +169,16 @@ void setup()
   //{ID:2,keyword:"命令词",ASR:"关闭灯光",ASRTO:"好的，马上关闭灯光"}
   //{ID:3,keyword:"命令词",ASR:"灯光打开",ASRTO:"好的，马上打开灯光"}
   //{ID:4,keyword:"命令词",ASR:"灯光关闭",ASRTO:"好的，马上关闭灯光"}
+  //{ID:5,keyword:"命令词",ASR:"当前温度",ASRTO:""}
+  //{ID:6,keyword:"命令词",ASR:"当前心率",ASRTO:""}
+  //{ID:7,keyword:"命令词",ASR:"当前状态",ASRTO:""}
   setPinFun(4,FIRST_FUNCTION);
   pinMode(4,output);
 }
+
+
+
+
 
 
 /** edittype="asr_procode" */
