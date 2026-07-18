@@ -8,6 +8,8 @@
 - Python 本地服务实时写入 CSV
 - 历史任务查询、波形回放、CSV 导出和删除
 - 心率、ECG、EMG 和断线报警
+- 豆包 AI 读取采集任务统计并生成健康观察报告
+- 可选附带 ECG / EMG 任务上下文的语言聊天
 
 完整需求和 ESP32 数据协议见 [`PROJECT_SPEC.md`](./PROJECT_SPEC.md)。后续开发或其他 agent 应先阅读该文件。
 
@@ -25,6 +27,19 @@ python server.py
 ```text
 http://127.0.0.1:8080
 ```
+
+首次使用 AI 前，复制 `.env.example` 为 `.env`，只在本机填写密钥：
+
+```powershell
+Copy-Item .env.example .env
+notepad .env
+```
+
+`.env` 已被仓库根目录的 `.gitignore` 忽略。服务端只从环境变量或本地
+`.env` 读取 `ARK_API_KEY`，浏览器不会拿到密钥。
+
+还需在火山方舟控制台开通 `.env` 中 `ARK_MODEL` 对应的模型服务；未开通时
+页面会显示明确错误，可按控制台实际模型修改该值。
 
 不要再使用 `python -m http.server`，否则 CSV 保存和历史任务 API 不可用。
 

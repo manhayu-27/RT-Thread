@@ -51,6 +51,13 @@ const elements = {
   emptyRecords: $("#emptyRecords"),
   replayPanel: $("#replayPanel"),
   replayRange: $("#replayRange"),
+  aiStatus: $("#aiStatus"),
+  aiTask: $("#aiTask"),
+  aiReport: $("#aiReport"),
+  generateReport: $("#generateReport"),
+  chatLog: $("#chatLog"),
+  chatInput: $("#chatInput"),
+  sendChat: $("#sendChat"),
 };
 
 const state = {
@@ -84,6 +91,7 @@ const state = {
   alarmMedia: null,
   alarmAudioUnlocked: false,
   lastAlarmSoundAt: 0,
+  aiHistory: [],
 };
 
 function loadSettings() {
@@ -149,6 +157,9 @@ function resetSignalData() {
   if ($("#pitchValue")) $("#pitchValue").textContent = "--";
   if ($("#yawValue")) $("#yawValue").textContent = "--";
   if ($("#tempValue")) $("#tempValue").textContent = "--";
+  if ($("#gpsFixState")) $("#gpsFixState").textContent = "等待定位";
+  if ($("#latitudeValue")) $("#latitudeValue").textContent = "--";
+  if ($("#longitudeValue")) $("#longitudeValue").textContent = "--";
   CHANNELS.forEach((channel) => {
     $(`#${channel}Value`).textContent = "--";
   });
@@ -454,6 +465,7 @@ function parsePayload(payload) {
   if (text.startsWith("{") || text.startsWith("[")) {
     try {
       const message = JSON.parse(text);
+      if (message.gps) updateGps(message.gps);
       if (message.type === "status") return;
       const samples = Array.isArray(message) ? message : message.samples;
       if (Array.isArray(samples)) {
@@ -492,6 +504,18 @@ function parsePayload(payload) {
     const values = line.split(",").slice(0, 12).map(Number);
     if (values.length >= 4) addSample(values);
   });
+}
+
+function updateGps(gps) {
+  const latitude = Number(gps?.latitude);
+  const longitude = Number(gps?.longitude);
+  const fixed = (gps?.fix === true || Number(gps?.fix) > 0)
+    && Number.isFinite(latitude)
+    && Number.isFinite(longitude);
+
+  $("#gpsFixState").textContent = fixed ? "已定位" : "搜索卫星";
+  $("#latitudeValue").textContent = fixed ? latitude.toFixed(6) : "--";
+  $("#longitudeValue").textContent = fixed ? longitude.toFixed(6) : "--";
 }
 
 function setSampleRate(value) {
@@ -693,6 +717,103 @@ async function loadTasks() {
   }
 }
 
+async function loadAiTasks() {
+  const selected = elements.aiTask.value;
+  try {
+    const { tasks } = await api("/api/tasks");
+    elements.aiTask.replaceChildren(new Option("不附加信号任务", ""));
+    tasks.filter((task) => task.sampleCount > 0).forEach((task) => {
+      elements.aiTask.add(new Option(
+        `${task.name} · ${Number(task.sampleCount).toLocaleString()} 样本`,
+        task.id,
+      ));
+    });
+    if ([...elements.aiTask.options].some((option) => option.value === selected)) {
+      elements.aiTask.value = selected;
+    }
+  } catch (error) {
+    showToast(`读取 AI 任务失败：${error.message}`);
+  }
+}
+
+function setAiBusy(busy) {
+  elements.generateReport.disabled = busy;
+  elements.sendChat.disabled = busy;
+  elements.aiTask.disabled = busy;
+}
+
+async function generateAiReport() {
+  const taskId = elements.aiTask.value;
+  if (!taskId) {
+    showToast("请先选择一个有信号数据的采集任务");
+    return;
+  }
+  setAiBusy(true);
+  elements.aiReport.textContent = "正在读取完整 CSV 并生成报告…";
+  try {
+    const { report } = await api("/api/ai/report", {
+      method: "POST",
+      body: JSON.stringify({ taskId }),
+    });
+    elements.aiReport.textContent = report;
+  } catch (error) {
+    elements.aiReport.textContent = `报告生成失败：${error.message}`;
+  } finally {
+    setAiBusy(false);
+  }
+}
+
+function appendChat(role, content) {
+  const message = document.createElement("div");
+  message.className = `chat-message ${role}`;
+  message.textContent = content;
+  elements.chatLog.appendChild(message);
+  elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
+}
+
+async function sendAiMessage(event) {
+  event.preventDefault();
+  const message = elements.chatInput.value.trim();
+  if (!message) return;
+  const history = state.aiHistory.slice();
+  appendChat("user", message);
+  state.aiHistory.push({ role: "user", content: message });
+  elements.chatInput.value = "";
+  setAiBusy(true);
+  try {
+    const { answer } = await api("/api/ai/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, history, taskId: elements.aiTask.value }),
+    });
+    state.aiHistory.push({ role: "assistant", content: answer });
+    state.aiHistory = state.aiHistory.slice(-10);
+    appendChat("assistant", answer);
+  } catch (error) {
+    appendChat("assistant", `暂时无法回答：${error.message}`);
+  } finally {
+    setAiBusy(false);
+    elements.chatInput.focus();
+  }
+}
+
+function clearAiChat() {
+  state.aiHistory = [];
+  elements.chatLog.replaceChildren();
+  appendChat("assistant", "对话已清空。你可以继续询问信号指标或采集质量。");
+}
+
+async function checkAiStatus() {
+  try {
+    const status = await api("/api/ai/status");
+    elements.aiStatus.textContent = status.configured
+      ? `API 密钥已配置 · ${status.model}`
+      : "未配置 ARK_API_KEY";
+    elements.aiStatus.classList.toggle("ready", status.configured);
+  } catch {
+    elements.aiStatus.textContent = "本地服务未启动";
+  }
+}
+
 async function deleteTask(task) {
   if (!confirm(`确定删除任务“${task.name}”及其 CSV 文件吗？`)) return;
   try {
@@ -883,15 +1004,21 @@ $("#settingsButton").addEventListener("click", openSettings);
 $("#saveSettings").addEventListener("click", saveSettings);
 $("#refreshTasks").addEventListener("click", loadTasks);
 elements.replayRange.addEventListener("input", drawReplay);
+elements.generateReport.addEventListener("click", generateAiReport);
+$("#chatForm").addEventListener("submit", sendAiMessage);
+$("#clearChat").addEventListener("click", clearAiChat);
 
 $$(".nav-item[data-view]").forEach((button) => {
   button.addEventListener("click", () => {
     $$(".nav-item[data-view]").forEach((item) => item.classList.toggle("active", item === button));
-    const records = button.dataset.view === "records";
-    $("#monitorView").classList.toggle("active", !records);
-    $("#recordsView").classList.toggle("active", records);
-    $("#pageTitle").textContent = records ? "采集记录" : "实时生理信号";
-    if (records) loadTasks();
+    const view = button.dataset.view;
+    const titles = { monitor: "实时生理信号", records: "采集记录", ai: "AI 健康助手" };
+    ["monitor", "records", "ai"].forEach((name) => {
+      $(`#${name}View`).classList.toggle("active", view === name);
+    });
+    $("#pageTitle").textContent = titles[view];
+    if (view === "records") loadTasks();
+    if (view === "ai") loadAiTasks();
   });
 });
 
@@ -914,4 +1041,5 @@ window.addEventListener("beforeunload", () => {
 updateClock();
 updateControls();
 fetch("/api/health").catch(() => showToast("本地服务未启动，CSV 保存和历史功能不可用"));
+checkAiStatus();
 render();

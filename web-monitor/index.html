@@ -25,6 +25,9 @@
           <button class="nav-item" data-view="records">
             <svg viewBox="0 0 24 24"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5" /></svg><span>采集记录</span>
           </button>
+          <button class="nav-item" data-view="ai">
+            <svg viewBox="0 0 24 24"><path d="M12 3v3M5.6 5.6l2.1 2.1M3 12h3M18 12h3M16.3 7.7l2.1-2.1M8 16h8M9 20h6" /><path d="M8 12a4 4 0 1 1 8 0c0 1.8-1 2.7-2 4h-4c-1-1.3-2-2.2-2-4Z" /></svg><span>AI 健康助手</span>
+          </button>
           <button class="nav-item" id="settingsButton">
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>
             <span>报警设置</span>
@@ -88,6 +91,7 @@
             <article class="metric-card"><div class="metric-head"><span class="metric-icon green"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg></span><span class="metric-label">采集状态</span><span class="trend" id="recordState">未记录</span></div><div class="metric-value compact"><strong id="sampleRate">--</strong><span>Hz</span></div><div class="metric-foot"><span>任务时长</span><strong id="captureDuration">00:00:00</strong></div></article>
             <article class="metric-card"><div class="metric-head"><span class="metric-icon blue"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="m12 8 3 4-3 4M8 12h7" /></svg></span><span class="metric-label">陀螺仪 / 跌倒</span><span class="trend" id="fallState">NORMAL</span></div><div class="gyro-values"><span>X <strong id="gyroX">--</strong></span><span>Y <strong id="gyroY">--</strong></span><span>Z <strong id="gyroZ">--</strong></span></div><div class="metric-foot"><span>单位</span><strong>dps</strong></div></article>
             <article class="metric-card"><div class="metric-head"><span class="metric-icon green"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5" /></svg></span><span class="metric-label">大腿姿态 / 温度</span><span class="trend">BMI088</span></div><div class="gyro-values orientation-values"><span>横滚 <strong id="rollValue">--</strong></span><span>俯仰 <strong id="pitchValue">--</strong></span><span>偏航 <strong id="yawValue">--</strong></span><span>温度 <strong id="tempValue">--</strong></span></div><div class="metric-foot"><span>单位</span><strong>deg / C</strong></div></article>
+            <article class="metric-card"><div class="metric-head"><span class="metric-icon green"><svg viewBox="0 0 24 24"><path d="M12 21s6-5.2 6-11a6 6 0 1 0-12 0c0 5.8 6 11 6 11Z" /><circle cx="12" cy="10" r="2" /></svg></span><span class="metric-label">GPS 坐标</span><span class="trend" id="gpsFixState">等待定位</span></div><div class="gyro-values orientation-values"><span>纬度 <strong id="latitudeValue">--</strong></span><span>经度 <strong id="longitudeValue">--</strong></span></div><div class="metric-foot"><span>定位模块</span><strong>ATGM336H</strong></div></article>
           </section>
 
           <div class="section-heading waveform-heading">
@@ -133,6 +137,26 @@
               <div><strong>EMG3</strong><canvas id="historyEmg3"></canvas></div>
             </div>
           </section>
+        </section>
+
+        <section id="aiView" class="view">
+          <div class="ai-intro">
+            <div><span class="section-kicker">DOUBAO AI ASSISTANT</span><h2>信号健康观察与语言聊天</h2><p>选择一次 ECG / EMG 采集任务，由豆包基于整份 CSV 的统计结果生成报告。</p></div>
+            <span class="ai-status" id="aiStatus">正在检查 API</span>
+          </div>
+          <label class="ai-task-select"><span>分析任务</span><select id="aiTask"><option value="">不附加信号任务</option></select></label>
+          <div class="ai-grid">
+            <section class="ai-card report-card">
+              <div class="ai-card-head"><div><span class="section-kicker">SIGNAL REPORT</span><h3>AI 健康观察报告</h3></div><button class="button primary" id="generateReport">生成报告</button></div>
+              <div class="ai-report" id="aiReport">选择一个已有采集任务，然后生成报告。报告仅用于工程调试或教学研究，不用于医学诊断。</div>
+            </section>
+            <section class="ai-card chat-card">
+              <div class="ai-card-head"><div><span class="section-kicker">LANGUAGE CHAT</span><h3>健康助手对话</h3></div><button class="mini-button" id="clearChat">清空</button></div>
+              <div class="chat-log" id="chatLog" aria-live="polite"><div class="chat-message assistant">你好，我可以解释 ECG / EMG 指标、采集质量和报告内容。选择任务后，我会在回答中参考该任务。</div></div>
+              <form class="chat-form" id="chatForm"><textarea id="chatInput" maxlength="2000" rows="2" placeholder="输入问题，例如：三路肌电信号有什么差异？" required></textarea><button class="button primary" type="submit" id="sendChat">发送</button></form>
+            </section>
+          </div>
+          <footer><span>AI 输出可能出错，仅供参考，不替代医生诊断或紧急医疗服务</span></footer>
         </section>
       </main>
     </div>

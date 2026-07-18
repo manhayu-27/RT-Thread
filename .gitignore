@@ -9,6 +9,11 @@ __pycache__/
 .venv/
 venv/
 
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
 # Web monitor runtime data
 /web-monitor/data/*
 !/web-monitor/data/.gitkeep

@@ -30,7 +30,9 @@
 
 static const char *TAG = "ear_board";
 static const uart_port_t STM32_UART = UART_NUM_1;
+static const uart_port_t GPS_UART = UART_NUM_2;
 #define STM32_UART_BAUD_RATE 1000000
+#define GPS_UART_BAUD_RATE 9600
 #define LCD_SPI_HOST SPI3_HOST
 #define UI_WAVE_X0 0
 #define UI_WAVE_Y0 22
@@ -53,6 +55,12 @@ typedef struct {
     float ch3;
     float ch4;
 } waveform_sample_t;
+
+typedef struct {
+    bool fix;
+    double latitude;
+    double longitude;
+} gps_fix_t;
 
 #define WAVEFORM_FIFO_LEN 512U
 
@@ -80,7 +88,9 @@ static httpd_handle_t web_server;
 static volatile int websocket_client_fd = -1;
 static volatile int64_t epoch_offset_us;
 static portMUX_TYPE time_sync_mux = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE gps_mux = portMUX_INITIALIZER_UNLOCKED;
 static EventGroupHandle_t wifi_event_group;
+static gps_fix_t latest_gps;
 static float web_batch[WEB_BATCH_SIZE][WEB_SAMPLE_FIELDS];
 static uint8_t web_batch_count;
 static uint64_t web_sequence;
@@ -236,6 +246,216 @@ static bool is_vofa_sample_line(const char *line)
     }
 
     return has_digit;
+}
+
+static int hex_nibble(char value)
+{
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    return -1;
+}
+
+static bool nmea_checksum_valid(const char *line)
+{
+    const char *checksum_text;
+    uint8_t checksum = 0U;
+    int high;
+    int low;
+
+    if (line == NULL || line[0] != '$') {
+        return false;
+    }
+
+    checksum_text = strchr(line, '*');
+    if (checksum_text == NULL || checksum_text[1] == '\0' ||
+        checksum_text[2] == '\0' || checksum_text[3] != '\0') {
+        return false;
+    }
+
+    high = hex_nibble(checksum_text[1]);
+    low = hex_nibble(checksum_text[2]);
+    if (high < 0 || low < 0) {
+        return false;
+    }
+
+    for (const char *cursor = line + 1; cursor < checksum_text; ++cursor) {
+        checksum ^= (uint8_t)*cursor;
+    }
+
+    return checksum == (uint8_t)((high << 4) | low);
+}
+
+static bool nmea_coordinate(double raw,
+                            char hemisphere,
+                            bool latitude,
+                            double *coordinate)
+{
+    const int degrees = (int)(raw / 100.0);
+    const double minutes = raw - (double)degrees * 100.0;
+    const int maximum_degrees = latitude ? 90 : 180;
+
+    if (coordinate == NULL || raw < 0.0 || minutes < 0.0 || minutes >= 60.0 ||
+        degrees > maximum_degrees ||
+        (degrees == maximum_degrees && minutes > 0.0)) {
+        return false;
+    }
+    if ((latitude && hemisphere != 'N' && hemisphere != 'S') ||
+        (!latitude && hemisphere != 'E' && hemisphere != 'W')) {
+        return false;
+    }
+
+    *coordinate = (double)degrees + minutes / 60.0;
+    if (hemisphere == 'S' || hemisphere == 'W') {
+        *coordinate = -*coordinate;
+    }
+    return true;
+}
+
+static bool parse_gga_line(const char *line, gps_fix_t *fix)
+{
+    char copy[128];
+    char *fields[7];
+    char *checksum_text;
+    char *end;
+    unsigned long quality;
+    double raw_latitude;
+    double raw_longitude;
+
+    if (fix == NULL || !nmea_checksum_valid(line) || strlen(line) >= sizeof(copy)) {
+        return false;
+    }
+
+    strcpy(copy, line);
+    checksum_text = strchr(copy, '*');
+    *checksum_text = '\0';
+    fields[0] = copy;
+    for (size_t index = 1; index < 7; ++index) {
+        fields[index] = strchr(fields[index - 1], ',');
+        if (fields[index] == NULL) {
+            return false;
+        }
+        *fields[index] = '\0';
+        fields[index]++;
+    }
+    end = strchr(fields[6], ',');
+    if (end == NULL) {
+        return false;
+    }
+    *end = '\0';
+
+    if (strlen(fields[0]) != 6U || strcmp(fields[0] + 3, "GGA") != 0) {
+        return false;
+    }
+
+    quality = strtoul(fields[6], &end, 10);
+    if (end == fields[6] || *end != '\0') {
+        return false;
+    }
+
+    fix->fix = quality != 0U;
+    fix->latitude = 0.0;
+    fix->longitude = 0.0;
+    if (!fix->fix) {
+        return true;
+    }
+
+    raw_latitude = strtod(fields[2], &end);
+    if (end == fields[2] || *end != '\0' || strlen(fields[3]) != 1U ||
+        !nmea_coordinate(raw_latitude, fields[3][0], true, &fix->latitude)) {
+        return false;
+    }
+
+    raw_longitude = strtod(fields[4], &end);
+    if (end == fields[4] || *end != '\0' || strlen(fields[5]) != 1U ||
+        !nmea_coordinate(raw_longitude, fields[5][0], false, &fix->longitude)) {
+        return false;
+    }
+
+    return true;
+}
+
+static void gps_parser_self_check(void)
+{
+    static const char sample[] =
+        "$GPGGA,123519,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,*47";
+    gps_fix_t fix;
+
+    ESP_ERROR_CHECK(parse_gga_line(sample, &fix) &&
+                    fix.fix &&
+                    fabs(fix.latitude - 48.1173) < 0.000001 &&
+                    fabs(fix.longitude - 11.5166666667) < 0.000001
+                        ? ESP_OK
+                        : ESP_FAIL);
+}
+
+static void process_gps_line(const char *line)
+{
+    gps_fix_t fix;
+
+    if (!parse_gga_line(line, &fix)) {
+        return;
+    }
+
+    portENTER_CRITICAL(&gps_mux);
+    latest_gps = fix;
+    portEXIT_CRITICAL(&gps_mux);
+}
+
+static void gps_uart_task(void *arg)
+{
+    uint8_t data[64];
+    char line[128];
+    size_t line_length = 0U;
+
+    (void)arg;
+
+    while (true) {
+        const int length = uart_read_bytes(GPS_UART, data, sizeof(data),
+                                           pdMS_TO_TICKS(200));
+
+        for (int index = 0; index < length; ++index) {
+            if (data[index] == '\n') {
+                if (line_length > 0U && line[line_length - 1U] == '\r') {
+                    line_length--;
+                }
+                line[line_length] = '\0';
+                process_gps_line(line);
+                line_length = 0U;
+            } else if (line_length < sizeof(line) - 1U) {
+                line[line_length++] = (char)data[index];
+            } else {
+                line_length = 0U;
+            }
+        }
+    }
+}
+
+static void init_gps_uart(void)
+{
+    const uart_config_t config = {
+        .baud_rate = GPS_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+
+    gps_parser_self_check();
+    ESP_ERROR_CHECK(uart_driver_install(GPS_UART, 1024, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_param_config(GPS_UART, &config));
+    ESP_ERROR_CHECK(uart_set_pin(GPS_UART,
+                                 BOARD_GPS_UART_TX_GPIO,
+                                 BOARD_GPS_UART_RX_GPIO,
+                                 UART_PIN_NO_CHANGE,
+                                 UART_PIN_NO_CHANGE));
 }
 
 static int64_t web_timestamp_us(void)
@@ -424,11 +644,16 @@ static void websocket_send_batch(void)
 {
     httpd_ws_frame_t frame = {0};
     const int client_fd = websocket_client_fd;
+    gps_fix_t gps;
     size_t used = 0;
 
     if (web_server == NULL || client_fd < 0) {
         return;
     }
+
+    portENTER_CRITICAL(&gps_mux);
+    gps = latest_gps;
+    portEXIT_CRITICAL(&gps_mux);
 
     if (!append_web_payload(&used,
                             "{\"type\":\"samples\",\"version\":1,"
@@ -461,7 +686,15 @@ static void websocket_send_batch(void)
         }
     }
 
-    if (!append_web_payload(&used, "]}")) {
+    if (gps.fix) {
+        if (!append_web_payload(&used,
+                                "],\"gps\":{\"fix\":true,"
+                                "\"latitude\":%.6f,\"longitude\":%.6f}}",
+                                gps.latitude,
+                                gps.longitude)) {
+            return;
+        }
+    } else if (!append_web_payload(&used, "],\"gps\":{\"fix\":false}}")) {
         return;
     }
 
@@ -1152,6 +1385,8 @@ void app_main(void)
 {
     esp_log_level_set("*", ESP_LOG_NONE);
     init_stm32_uart();
+    init_gps_uart();
+    xTaskCreate(gps_uart_task, "gps_uart", 3072, NULL, 5, NULL);
     init_wifi_sta();
     start_websocket_server();
 #if BOARD_ENABLE_WEB_TEST_SIGNAL

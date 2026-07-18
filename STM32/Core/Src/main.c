@@ -81,6 +81,12 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+#ifdef RT_USING_USER_MAIN
+  /*
+   * rt_hw_board_init() already initialized HAL and the system clock before
+   * RT-Thread started this user main thread.
+   */
+#else
 
   /* USER CODE END 1 */
 
@@ -97,6 +103,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+#endif /* RT_USING_USER_MAIN */
 
   /* USER CODE END SysInit */
 

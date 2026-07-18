@@ -209,6 +209,14 @@ static void esp32_uart_send(const char *text)
     }
 }
 
+static int bmi088_set_spi_mode(uint32_t polarity, uint32_t phase)
+{
+    hspi1.Init.CLKPolarity = polarity;
+    hspi1.Init.CLKPhase = phase;
+
+    return (HAL_SPI_Init(&hspi1) == HAL_OK) ? 0 : -1;
+}
+
 int bmi088_init(void)
 {
     uint8_t value = 0U;
@@ -638,7 +646,18 @@ int bmi088_start(void)
 {
     rt_thread_t thread;
     char line[64];
-    int status = bmi088_init();
+    int status;
+
+    HAL_Delay(100U);
+    status = bmi088_init();
+    if (status != 0)
+    {
+        debug_uart_send("BMI088_RETRY,MODE0\r\n");
+        if (bmi088_set_spi_mode(SPI_POLARITY_LOW, SPI_PHASE_1EDGE) == 0)
+        {
+            status = bmi088_init();
+        }
+    }
 
     if (status != 0)
     {
