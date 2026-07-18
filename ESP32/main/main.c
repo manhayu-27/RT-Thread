@@ -36,6 +36,7 @@ static const uart_port_t ASRPRO_UART = UART_NUM_0;
 #define STM32_UART_BAUD_RATE 1000000
 #define GPS_UART_BAUD_RATE 9600
 #define ASRPRO_UART_BAUD_RATE 9600
+#define WIFI_CONNECTED_BIT BIT0
 #define LCD_SPI_HOST SPI3_HOST
 #define UI_WAVE_X0 0
 #define UI_WAVE_Y0 22
@@ -50,7 +51,6 @@ static const uart_port_t ASRPRO_UART = UART_NUM_0;
 #define WEB_BATCH_SIZE 10U
 #define WEB_PAYLOAD_SIZE 3072U
 #define WEB_SAMPLE_FIELDS 12U
-#define WIFI_CONNECTED_BIT BIT0
 #define HEART_RATE_MIN_INTERVAL_US 300000LL
 #define HEART_RATE_MAX_INTERVAL_US 2000000LL
 #define HEART_RATE_STALE_US 3000000LL
@@ -584,6 +584,42 @@ static void apply_time_sync(const char *payload)
     }
 }
 
+static void apply_phone_location(const char *payload)
+{
+    const char *latitude_field;
+    const char *longitude_field;
+    char *end;
+    double latitude;
+    double longitude;
+
+    if (payload == NULL || strstr(payload, "\"type\":\"phoneLocation\"") == NULL) {
+        return;
+    }
+    latitude_field = strstr(payload, "\"latitude\"");
+    longitude_field = strstr(payload, "\"longitude\"");
+    latitude_field = latitude_field != NULL ? strchr(latitude_field, ':') : NULL;
+    longitude_field = longitude_field != NULL ? strchr(longitude_field, ':') : NULL;
+    if (latitude_field == NULL || longitude_field == NULL) {
+        return;
+    }
+    latitude = strtod(latitude_field + 1, &end);
+    if (end == latitude_field + 1) {
+        return;
+    }
+    longitude = strtod(longitude_field + 1, &end);
+    if (end == longitude_field + 1 || !isfinite(latitude) || !isfinite(longitude) ||
+        latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
+        return;
+    }
+    portENTER_CRITICAL(&gps_mux);
+    latest_gps.fix = true;
+    latest_gps.latitude = latitude;
+    latest_gps.longitude = longitude;
+    latest_gps.satellites = 0U;
+    latest_gps.hdop = 0.0;
+    portEXIT_CRITICAL(&gps_mux);
+}
+
 static esp_err_t websocket_handler(httpd_req_t *req)
 {
     httpd_ws_frame_t frame = {0};
@@ -610,6 +646,7 @@ static esp_err_t websocket_handler(httpd_req_t *req)
     if (frame.type == HTTPD_WS_TYPE_TEXT) {
         payload[frame.len] = '\0';
         apply_time_sync(payload);
+        apply_phone_location(payload);
     }
 
     return ESP_OK;
@@ -641,20 +678,13 @@ static void wifi_event_handler(void *arg,
                                void *event_data)
 {
     (void)arg;
-
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         (void)esp_wifi_connect();
-        return;
-    }
-
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
         (void)esp_wifi_connect();
         printf("WIFI,DISCONNECTED\r\n");
-        return;
-    }
-
-    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)event_data;
         printf("ESP32_IP," IPSTR "\r\n", IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
@@ -668,9 +698,7 @@ static void init_wifi_sta(void)
         .sta = {
             .ssid = BOARD_WIFI_STA_SSID,
             .password = BOARD_WIFI_STA_PASSWORD,
-            .threshold = {
-                .authmode = WIFI_AUTH_WPA2_PSK,
-            },
+            .threshold = { .authmode = WIFI_AUTH_WPA2_PSK },
         },
     };
     esp_err_t status = nvs_flash_init();
@@ -682,10 +710,10 @@ static void init_wifi_sta(void)
     }
     ESP_ERROR_CHECK(status);
 
-    wifi_event_group = xEventGroupCreate();
-    ESP_ERROR_CHECK(wifi_event_group == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK(wifi_event_group == NULL ? ESP_ERR_NO_MEM : ESP_OK);
     esp_netif_create_default_wifi_sta();
     ESP_ERROR_CHECK(esp_wifi_init(&init_config));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
@@ -701,11 +729,6 @@ static void init_wifi_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
     printf("WIFI,STA_CONNECTING,%s\r\n", BOARD_WIFI_STA_SSID);
-    (void)xEventGroupWaitBits(wifi_event_group,
-                              WIFI_CONNECTED_BIT,
-                              pdFALSE,
-                              pdFALSE,
-                              pdMS_TO_TICKS(15000));
 }
 
 static bool append_web_payload(size_t *used, const char *format, ...)
@@ -943,6 +966,23 @@ static void asrpro_send_vitals(const char *request)
     const bool heart_valid = latest_heart_rate_bpm != 0U &&
                              (now_us - latest_heart_peak_us) <= HEART_RATE_STALE_US;
     const long temperature_hundredths = lroundf(latest_temperature_c * 100.0f);
+    gps_fix_t gps;
+
+    if (strcmp(request, "ASR,GET,COORD") == 0) {
+        portENTER_CRITICAL(&gps_mux);
+        gps = latest_gps;
+        portEXIT_CRITICAL(&gps_mux);
+
+        if (!gps.fix) {
+            asrpro_uart_send("ASR,DATA,COORD,NONE\n");
+        } else {
+            (void)snprintf(response, sizeof(response), "ASR,DATA,COORD,%ld,%ld\n",
+                           lround(gps.latitude * 1000000.0),
+                           lround(gps.longitude * 1000000.0));
+            asrpro_uart_send(response);
+        }
+        return;
+    }
 
     if (!latest_vitals_valid) {
         asrpro_uart_send("ASR,DATA,NONE\n");

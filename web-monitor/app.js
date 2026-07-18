@@ -506,6 +506,14 @@ function parsePayload(payload) {
   });
 }
 
+window.onPhoneLocation = (latitude, longitude, accuracy) => {
+  const gps = { fix: true, latitude: Number(latitude), longitude: Number(longitude), accuracy, source: "phone" };
+  updateGps(gps);
+  if (state.socket?.readyState === WebSocket.OPEN) {
+    state.socket.send(JSON.stringify({ type: "phoneLocation", ...gps }));
+  }
+};
+
 function updateGps(gps) {
   const latitude = Number(gps?.latitude);
   const longitude = Number(gps?.longitude);
@@ -598,6 +606,7 @@ function connectSocket() {
       state.paused = false;
       setStatus("connected", "设备在线", `${url} · 等待第一帧样本`);
       elements.connectButton.textContent = "断开设备";
+      window.AndroidHost?.startLocation();
     });
     socket.addEventListener("message", (event) => {
       parsePayload(event.data);
@@ -619,6 +628,11 @@ function connectSocket() {
 }
 
 async function api(path, options = {}) {
+  if (window.AndroidHost) {
+    const response = JSON.parse(window.AndroidHost.api(path, options.method || "GET", options.body || ""));
+    if (response.error) throw new Error(response.error);
+    return response;
+  }
   const response = await fetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -816,7 +830,7 @@ async function checkAiStatus() {
     const status = await api("/api/ai/status");
     elements.aiStatus.textContent = status.configured
       ? `API 密钥已配置 · ${status.model}`
-      : "未配置 ARK_API_KEY";
+      : window.AndroidHost ? "点击此处配置 ARK_API_KEY" : "未配置 ARK_API_KEY";
     elements.aiStatus.classList.toggle("ready", status.configured);
   } catch {
     elements.aiStatus.textContent = "本地服务未启动";
@@ -841,6 +855,10 @@ async function openReplay(task) {
     $("#replayTitle").textContent = task.name;
     $("#replayMeta").textContent = `${formatDate(task.startedAt)} · ${formatDuration(task.durationSeconds || 0)} · ${Number(task.sampleCount).toLocaleString()} 个样本`;
     $("#downloadCsv").href = `/api/tasks/${task.id}/csv`;
+    $("#downloadCsv").onclick = window.AndroidHost ? (event) => {
+      event.preventDefault();
+      window.AndroidHost.exportCsv(task.id);
+    } : null;
     elements.replayRange.value = 0;
     elements.replayPanel.classList.add("show");
     drawReplay();
@@ -1016,6 +1034,7 @@ elements.replayRange.addEventListener("input", drawReplay);
 elements.generateReport.addEventListener("click", generateAiReport);
 $("#chatForm").addEventListener("submit", sendAiMessage);
 $("#clearChat").addEventListener("click", clearAiChat);
+elements.aiStatus.addEventListener("click", () => window.AndroidHost?.configureAi());
 
 $$(".nav-item[data-view]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -1049,6 +1068,6 @@ window.addEventListener("beforeunload", () => {
 
 updateClock();
 updateControls();
-fetch("/api/health").catch(() => showToast("本地服务未启动，CSV 保存和历史功能不可用"));
+if (!window.AndroidHost) fetch("/api/health").catch(() => showToast("本地服务未启动，CSV 保存和历史功能不可用"));
 checkAiStatus();
 render();

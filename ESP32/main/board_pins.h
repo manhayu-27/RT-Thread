@@ -6,7 +6,7 @@
 #define BOARD_USB_DM_GPIO       19
 #define BOARD_USB_DP_GPIO       20
 
-/* Router Wi-Fi used by ESP32 STA mode. Fill these before flashing. */
+/* ESP32 joins the phone hotspot. Change these to the hotspot name/password. */
 #define BOARD_WIFI_STA_SSID       "Redmi K40"
 #define BOARD_WIFI_STA_PASSWORD   "228425529syh"
 

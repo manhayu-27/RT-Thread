@@ -21,6 +21,9 @@ void asrpro_uart_task();
 //{playid:10007,voice:暂无有效心率数据}
 //{playid:10008,voice:暂未收到采集数据}
 //{playid:10009,voice:数据请求超时}
+//{playid:10010,voice:当前坐标为，纬度}
+//{playid:10011,voice:，经度}
+//{playid:10012,voice:暂未收到有效坐标}
 // play_num() 使用的数字音频资源，ID 必须是 10084 至 10100。
 //{playid:10084,voice:零}
 //{playid:10085,voice:一}
@@ -67,11 +70,21 @@ static void speak_heart_rate(uint32_t heart_rate_hundredths)
   play_audio(10006);
 }
 
+static void speak_coordinate(int32_t latitude_e6, int32_t longitude_e6)
+{
+  enter_wakeup(10000);
+  play_audio(10010);
+  play_num((int64_t)latitude_e6, 1);
+  play_audio(10011);
+  play_num((int64_t)longitude_e6, 1);
+}
+
 static void handle_asrpro_frame(String frame)
 {
   const String temperature_prefix = "ASR,DATA,TEMP,";
   const String heart_prefix = "ASR,DATA,HEART,";
   const String all_prefix = "ASR,DATA,ALL,";
+  const String coordinate_prefix = "ASR,DATA,COORD,";
 
   frame.trim();
   if (frame.startsWith("ASR,DATA,")) {
@@ -80,6 +93,9 @@ static void handle_asrpro_frame(String frame)
   if (frame == "ASR,DATA,NONE") {
     enter_wakeup(10000);
     play_audio(10008);
+  } else if (frame == "ASR,DATA,COORD,NONE") {
+    enter_wakeup(10000);
+    play_audio(10012);
   } else if (frame.startsWith(temperature_prefix)) {
     speak_temperature(frame.substring(temperature_prefix.length()).toInt());
   } else if (frame.startsWith(heart_prefix)) {
@@ -90,6 +106,13 @@ static void handle_asrpro_frame(String frame)
     if (separator >= 0) {
       speak_temperature(frame.substring(all_prefix.length(), separator).toInt());
       speak_heart_rate((uint32_t)frame.substring(separator + 1).toInt());
+    }
+  } else if (frame.startsWith(coordinate_prefix)) {
+    const int separator = frame.indexOf(',', coordinate_prefix.length());
+
+    if (separator >= 0) {
+      speak_coordinate(frame.substring(coordinate_prefix.length(), separator).toInt(),
+                       frame.substring(separator + 1).toInt());
     }
   }
 }
@@ -134,6 +157,9 @@ void ASR_CODE(){
    case 7:
     request_esp32("ASR,GET,ALL");
     break;
+   case 8:
+    request_esp32("ASR,GET,COORD");
+    break;
   }
   //除了switch分支选择，也可用如果判断识别ID的值来执行动作
   if((snid) == 3){
@@ -172,6 +198,7 @@ void setup()
   //{ID:5,keyword:"命令词",ASR:"当前温度",ASRTO:""}
   //{ID:6,keyword:"命令词",ASR:"当前心率",ASRTO:""}
   //{ID:7,keyword:"命令词",ASR:"当前状态",ASRTO:""}
+  //{ID:8,keyword:"命令词",ASR:"当前坐标",ASRTO:""}
   setPinFun(4,FIRST_FUNCTION);
   pinMode(4,output);
 }
