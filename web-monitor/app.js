@@ -509,11 +509,20 @@ function parsePayload(payload) {
 function updateGps(gps) {
   const latitude = Number(gps?.latitude);
   const longitude = Number(gps?.longitude);
+  const rxBytes = Number(gps?.rxBytes ?? 0);
+  const validSentences = Number(gps?.validSentences ?? 0);
+  const satellites = Number(gps?.satellites ?? 0);
   const fixed = (gps?.fix === true || Number(gps?.fix) > 0)
     && Number.isFinite(latitude)
     && Number.isFinite(longitude);
 
-  $("#gpsFixState").textContent = fixed ? "已定位" : "搜索卫星";
+  $("#gpsFixState").textContent = fixed
+    ? "已定位"
+    : rxBytes === 0
+      ? "GPS无串口数据"
+      : validSentences === 0
+        ? "收到数据但解析失败"
+        : `已收到数据，等待定位（${satellites}颗卫星）`;
   $("#latitudeValue").textContent = fixed ? latitude.toFixed(6) : "--";
   $("#longitudeValue").textContent = fixed ? longitude.toFixed(6) : "--";
 }

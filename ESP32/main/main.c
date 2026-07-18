@@ -60,6 +60,8 @@ typedef struct {
     bool fix;
     double latitude;
     double longitude;
+    unsigned long satellites;
+    double hdop;
 } gps_fix_t;
 
 #define WAVEFORM_FIFO_LEN 512U
@@ -91,6 +93,9 @@ static portMUX_TYPE time_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE gps_mux = portMUX_INITIALIZER_UNLOCKED;
 static EventGroupHandle_t wifi_event_group;
 static gps_fix_t latest_gps;
+static volatile uint32_t gps_rx_bytes;
+static volatile uint32_t gps_sentence_count;
+static volatile uint32_t gps_valid_sentence_count;
 static float web_batch[WEB_BATCH_SIZE][WEB_SAMPLE_FIELDS];
 static uint8_t web_batch_count;
 static uint64_t web_sequence;
@@ -321,7 +326,7 @@ static bool nmea_coordinate(double raw,
 static bool parse_gga_line(const char *line, gps_fix_t *fix)
 {
     char copy[128];
-    char *fields[7];
+    char *fields[9];
     char *checksum_text;
     char *end;
     unsigned long quality;
@@ -336,7 +341,7 @@ static bool parse_gga_line(const char *line, gps_fix_t *fix)
     checksum_text = strchr(copy, '*');
     *checksum_text = '\0';
     fields[0] = copy;
-    for (size_t index = 1; index < 7; ++index) {
+    for (size_t index = 1; index < 9; ++index) {
         fields[index] = strchr(fields[index - 1], ',');
         if (fields[index] == NULL) {
             return false;
@@ -344,12 +349,6 @@ static bool parse_gga_line(const char *line, gps_fix_t *fix)
         *fields[index] = '\0';
         fields[index]++;
     }
-    end = strchr(fields[6], ',');
-    if (end == NULL) {
-        return false;
-    }
-    *end = '\0';
-
     if (strlen(fields[0]) != 6U || strcmp(fields[0] + 3, "GGA") != 0) {
         return false;
     }
@@ -362,6 +361,19 @@ static bool parse_gga_line(const char *line, gps_fix_t *fix)
     fix->fix = quality != 0U;
     fix->latitude = 0.0;
     fix->longitude = 0.0;
+    fix->satellites = strtoul(fields[7], &end, 10);
+    if (*end != '\0') {
+        return false;
+    }
+    end = strchr(fields[8], ',');
+    if (end == NULL) {
+        return false;
+    }
+    *end = '\0';
+    fix->hdop = strtod(fields[8], &end);
+    if (end == fields[8] || *end != '\0') {
+        return false;
+    }
     if (!fix->fix) {
         return true;
     }
@@ -399,10 +411,12 @@ static void process_gps_line(const char *line)
 {
     gps_fix_t fix;
 
+    gps_sentence_count++;
     if (!parse_gga_line(line, &fix)) {
         return;
     }
 
+    gps_valid_sentence_count++;
     portENTER_CRITICAL(&gps_mux);
     latest_gps = fix;
     portEXIT_CRITICAL(&gps_mux);
@@ -419,6 +433,9 @@ static void gps_uart_task(void *arg)
     while (true) {
         const int length = uart_read_bytes(GPS_UART, data, sizeof(data),
                                            pdMS_TO_TICKS(200));
+        if (length > 0) {
+            gps_rx_bytes += (uint32_t)length;
+        }
 
         for (int index = 0; index < length; ++index) {
             if (data[index] == '\n') {
@@ -689,12 +706,29 @@ static void websocket_send_batch(void)
     if (gps.fix) {
         if (!append_web_payload(&used,
                                 "],\"gps\":{\"fix\":true,"
-                                "\"latitude\":%.6f,\"longitude\":%.6f}}",
+                                "\"latitude\":%.6f,\"longitude\":%.6f,"
+                                "\"satellites\":%lu,\"hdop\":%.2f,"
+                                "\"rxBytes\":%lu,\"sentences\":%lu,"
+                                "\"validSentences\":%lu}}",
                                 gps.latitude,
-                                gps.longitude)) {
+                                gps.longitude,
+                                gps.satellites,
+                                gps.hdop,
+                                (unsigned long)gps_rx_bytes,
+                                (unsigned long)gps_sentence_count,
+                                (unsigned long)gps_valid_sentence_count)) {
             return;
         }
-    } else if (!append_web_payload(&used, "],\"gps\":{\"fix\":false}}")) {
+    } else if (!append_web_payload(&used,
+                                   "],\"gps\":{\"fix\":false,"
+                                   "\"satellites\":%lu,\"hdop\":%.2f,"
+                                   "\"rxBytes\":%lu,\"sentences\":%lu,"
+                                   "\"validSentences\":%lu}}",
+                                   gps.satellites,
+                                   gps.hdop,
+                                   (unsigned long)gps_rx_bytes,
+                                   (unsigned long)gps_sentence_count,
+                                   (unsigned long)gps_valid_sentence_count)) {
         return;
     }
 

@@ -13,11 +13,11 @@
 /* Set to 0 after the browser/WebSocket test to restore STM32 acquisition. */
 #define BOARD_ENABLE_WEB_TEST_SIGNAL 0
 
-/* U1.38/U1.39: ESP32_TX/ESP32_RX nets to the STM32F407. */
-#define BOARD_STM32_UART_TX_GPIO 33
-#define BOARD_STM32_UART_RX_GPIO 34
+/* U13.19/U13.20: ESP32_TX/ESP32_RX nets to the STM32F407. */
+#define BOARD_STM32_UART_TX_GPIO 11
+#define BOARD_STM32_UART_RX_GPIO 12
 
-/* U13.10/U13.11/U13.12: ATGM336H RX/TX/PPS nets. */
+/* U13.10/U13.11/U13.12: RX_GPS/TX_GPS/PPS from the board netlist. */
 #define BOARD_GPS_UART_TX_GPIO   17
 #define BOARD_GPS_UART_RX_GPIO   18
 #define BOARD_GPS_PPS_GPIO        8
