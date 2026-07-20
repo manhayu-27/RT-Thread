@@ -70,14 +70,19 @@
 #define GAIT_AMP_MAX_SCALE          1.00f    /* 最大输出为正常步态幅值。 */
 #define GAIT_AMP_RAMP_UP_PER_S      2.20f    /* 步态幅值渐变速度，从小幅逐步过渡到正常幅值。 */
 #define GAIT_AMP_DECAY_PER_S        1.60f    /* decay commanded gait amplitude quickly after human intent disappears */
-#define KNEE_JOINT_ANGLE_SCALE      0.92f    /* 膝关节步态角度缩放系数。 */
+#define KNEE_JOINT_ANGLE_SCALE      1.05f    /* Increase swing flexion while retaining the original safety clamp. */
 #define HIP_JOINT_ANGLE_SCALE       0.85f    /* 髋关节步态角度缩放系数。 */
 #define ANKLE_JOINT_ANGLE_SCALE     0.95f    /* 踝关节步态角度缩放系数。 */
 #define THIGH_PITCH_SIGN            1.0f     /* Set to -1 if forward swing commands the wrong direction. */
 #define THIGH_PITCH_GAIN            1.0f     /* Prosthesis hip angle / measured thigh angle. */
-#define THIGH_PHASE_PCT_PER_DEG     1.0f     /* Tune until one full thigh cycle advances about 100 percent. */
 #define THIGH_PHASE_NOISE_DEG       0.08f
 #define THIGH_PHASE_MAX_DELTA_DEG   8.0f
+#define THIGH_PHASE_RATE_ALPHA      0.35f
+#define THIGH_PHASE_REVERSE_DEG     0.18f
+#define THIGH_EXTENSION_DEG        (-18.0f)  /* Relative pitch at late stance. */
+#define THIGH_FLEXION_DEG            24.0f   /* Relative pitch at late swing. */
+#define GAIT_STANCE_END_PCT          60.0f
+#define THIGH_PHASE_MAX_STEP_PCT      4.0f
 #define KNEE_MAX_CMD_SPEED_DEG_S    320.0f   /* 膝关节目标角速度上限，防止目标变化过快。 */
 #define HIP_MAX_CMD_SPEED_DEG_S     240.0f
 
@@ -257,6 +262,8 @@ static int32_t g_node127_pitch_bias_sum = 0;
 static float g_node127_pitch_bias = 0.0f;
 static float g_node127_last_phase_pitch_deg = 0.0f;
 static uint16_t g_node127_last_phase_sequence = 0U;
+static float g_node127_pitch_delta_lpf = 0.0f;
+static uint8_t g_node127_gait_direction = 0U; /* 0=unknown, 1=stance/backward, 2=swing/forward. */
 static uint32_t g_node127_last_imu_motion_tick = 0U;
 
 typedef enum {
@@ -311,6 +318,7 @@ static float clampf_local(float x, float x_min, float x_max) {
 }
 
 static float Joint_ClampCurveDeg(const JointController_t *j, float deg);
+static void Node127_UpdateGaitPhase(float thigh_pitch_deg);
 static float ankle_wave_safe_deg_from_percent(float gait_percent);
 static uint8_t Ankle_WaitForFeedback(uint8_t node_id, uint32_t timeout_ms);
 static uint8_t Ankle_InitCANPositionMode(uint8_t node_id);
@@ -1012,6 +1020,66 @@ static float Node127_GetRelativePitchDeg(void)
     return THIGH_PITCH_SIGN * (((float)g_node127.pitch_q6 - g_node127_pitch_bias) / NODE127_PITCH_Q);
 }
 
+/*
+ * Convert thigh pitch into a direction-aware gait phase.
+ * Stance follows the thigh from flexion toward extension (0..60%), while swing
+ * follows it back toward flexion (60..100%). This prevents sensor jitter or a
+ * brief reversal from advancing a free-running phase in the wrong direction.
+ */
+static void Node127_UpdateGaitPhase(float thigh_pitch_deg)
+{
+    float pitch_delta_deg;
+    float phase_target;
+    float phase_span_deg = THIGH_FLEXION_DEG - THIGH_EXTENSION_DEG;
+
+    if (g_node127.sample_sequence == g_node127_last_phase_sequence) return;
+
+    pitch_delta_deg = thigh_pitch_deg - g_node127_last_phase_pitch_deg;
+    pitch_delta_deg = clampf_local(pitch_delta_deg,
+                                   -THIGH_PHASE_MAX_DELTA_DEG,
+                                   THIGH_PHASE_MAX_DELTA_DEG);
+    g_node127_pitch_delta_lpf += THIGH_PHASE_RATE_ALPHA *
+        (pitch_delta_deg - g_node127_pitch_delta_lpf);
+
+    if (fabsf(pitch_delta_deg) >= THIGH_PHASE_NOISE_DEG) {
+        if (g_node127_gait_direction == 0U) {
+            g_node127_gait_direction = (g_node127_pitch_delta_lpf >= 0.0f) ? 2U : 1U;
+            g_node127_phase_pct = (g_node127_gait_direction == 2U) ? GAIT_STANCE_END_PCT : 0.0f;
+        } else if ((g_node127_gait_direction == 1U) &&
+                   (g_node127_pitch_delta_lpf >= THIGH_PHASE_REVERSE_DEG)) {
+            g_node127_gait_direction = 2U;
+            if (g_node127_phase_pct < GAIT_STANCE_END_PCT) g_node127_phase_pct = GAIT_STANCE_END_PCT;
+        } else if ((g_node127_gait_direction == 2U) &&
+                   (g_node127_pitch_delta_lpf <= -THIGH_PHASE_REVERSE_DEG)) {
+            g_node127_gait_direction = 1U;
+            g_node127_phase_pct = 0.0f;
+        }
+    }
+
+    if (g_node127_gait_direction == 1U) {
+        phase_target = (THIGH_FLEXION_DEG - thigh_pitch_deg) *
+            GAIT_STANCE_END_PCT / phase_span_deg;
+        phase_target = clampf_local(phase_target, 0.0f, GAIT_STANCE_END_PCT);
+    } else if (g_node127_gait_direction == 2U) {
+        phase_target = GAIT_STANCE_END_PCT +
+            (thigh_pitch_deg - THIGH_EXTENSION_DEG) *
+            (100.0f - GAIT_STANCE_END_PCT) / phase_span_deg;
+        phase_target = clampf_local(phase_target, GAIT_STANCE_END_PCT, 100.0f);
+    } else {
+        phase_target = g_node127_phase_pct;
+    }
+
+    if (phase_target > (g_node127_phase_pct + THIGH_PHASE_MAX_STEP_PCT)) {
+        g_node127_phase_pct += THIGH_PHASE_MAX_STEP_PCT;
+    } else if (phase_target >= g_node127_phase_pct) {
+        g_node127_phase_pct = phase_target;
+    }
+
+    if (g_node127_phase_pct >= 100.0f) g_node127_phase_pct = 99.9f;
+    g_node127_last_phase_pitch_deg = thigh_pitch_deg;
+    g_node127_last_phase_sequence = g_node127.sample_sequence;
+}
+
 static void Node127_ClearIntent(void)
 {
     g_node127_emg_intent = 0U;
@@ -1053,6 +1121,8 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node127_phase_pct = GAIT_START_PHASE_PCT;
     g_node127_last_phase_pitch_deg = 0.0f;
     g_node127_last_phase_sequence = 0U;
+    g_node127_pitch_delta_lpf = 0.0f;
+    g_node127_gait_direction = 0U;
     g_node127_last_imu_motion_tick = 0U;
     g_node127_ctrl_state = NODE127_STATE_CALIB;
 }
@@ -1093,6 +1163,8 @@ static uint8_t Node127_RunCalibration(uint32_t now)
         }
         g_node127_last_phase_pitch_deg = 0.0f;
         g_node127_last_phase_sequence = g_node127.sample_sequence;
+        g_node127_pitch_delta_lpf = 0.0f;
+        g_node127_gait_direction = 0U;
         g_node127_calibrated = 1U;
         g_node127_ctrl_state = NODE127_STATE_IDLE;
         g_node127_motion_active = 0U;
@@ -1667,9 +1739,8 @@ void App_RunOnce(void) {
                 float amp_step;
                 float motion_drive;
                 float thigh_pitch_deg;
-                float pitch_delta_deg;
 
-                /* Pitch drives the hip directly; accumulated thigh travel drives knee/ankle phase. */
+                /* Pitch drives the hip directly and selects stance/swing phase for knee and ankle. */
                 motion_drive = clampf_local((0.75f * g_node127_intent_level) + (0.25f * g_node127_motion_level), 0.0f, 1.0f);
                 amp_target = GAIT_AMP_MIN_SCALE +
                     (GAIT_AMP_MAX_SCALE - GAIT_AMP_MIN_SCALE) * motion_drive;
@@ -1685,18 +1756,7 @@ void App_RunOnce(void) {
                 }
 
                 thigh_pitch_deg = Node127_GetRelativePitchDeg();
-                if (g_node127.sample_sequence != g_node127_last_phase_sequence) {
-                    pitch_delta_deg = fabsf(thigh_pitch_deg - g_node127_last_phase_pitch_deg);
-                    if (pitch_delta_deg > THIGH_PHASE_MAX_DELTA_DEG) {
-                        pitch_delta_deg = THIGH_PHASE_MAX_DELTA_DEG;
-                    }
-                    if (pitch_delta_deg >= THIGH_PHASE_NOISE_DEG) {
-                        g_node127_phase_pct = wrap_phase_pct(
-                            g_node127_phase_pct + pitch_delta_deg * THIGH_PHASE_PCT_PER_DEG);
-                    }
-                    g_node127_last_phase_pitch_deg = thigh_pitch_deg;
-                    g_node127_last_phase_sequence = g_node127.sample_sequence;
-                }
+                Node127_UpdateGaitPhase(thigh_pitch_deg);
 
                 Joint_PrepareRunRelative(&knee, g_node127_phase_pct);
                 Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
