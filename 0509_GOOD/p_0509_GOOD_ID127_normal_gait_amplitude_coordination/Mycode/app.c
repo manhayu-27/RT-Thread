@@ -42,8 +42,14 @@
 #define NODE127_EMG_RELEASE_ALPHA  0.10f   /* slower release: filters single-sample dropouts without long motor overrun */
 #define NODE127_EMG_BASELINE_ALPHA 0.0008f
 #define NODE127_EMG_BASELINE_TRACK_RAW 80.0f  /* uV MAV: only track baseline while idle. */
-#define NODE127_EMG_DEADBAND_RAW   20.0f  /* uV above the per-channel resting baseline. */
 #define NODE127_EMG_FULL_SCALE_RAW 300.0f /* uV active range; tune after subject calibration. */
+#define NODE127_EMG_ON_SIGMA       6.0f
+#define NODE127_EMG_OFF_SIGMA      3.0f
+#define NODE127_EMG_ON_MIN_RAW     25.0f
+#define NODE127_EMG_OFF_MIN_RAW    12.0f
+#define NODE127_EMG_ON_COUNT       3U
+#define NODE127_EMG_OFF_COUNT      20U
+#define NODE127_INTENT_WAIT_IMU_MS 300U
 #define NODE127_GYRO_DEADBAND_RAW  320.0f  /* Q6: 5 degrees/s. */
 #define NODE127_GYRO_FULL_RAW      9600.0f /* Q6: another 150 degrees/s reaches full scale. */
 #define NODE127_MOTION_HOLD_MS     80U     /* short anti-jitter hold only */
@@ -51,22 +57,9 @@
 #define NODE127_PITCH_Q            64.0f
 #define NODE127_IMU_MOVING_FLAG    0x0001U
 #define NODE127_CALIB_MS           1000U     /* Rest calibration; all motors hold during this time. */
-#define NODE127_MOVE_ON_GYRO_NORM   0.12f     /* 陀螺仪不单独触发运动，只参与运动强度计算。 */
-#define NODE127_MOVE_ON_EMG_NORM    0.170f    /* 肌电运动触发阈值，达到后才进入运动状态。 */
-#define NODE127_STOP_GYRO_NORM      0.030f    /* 停止时主要依据肌电，陀螺仪仅作为辅助量。 */
-#define NODE127_STOP_EMG_NORM       0.060f
-#define NODE127_STOP_CONFIRM_MS     220U
-#define NODE127_FAST_STOP_CONFIRM_MS 120U
-#define NODE127_EMG_ON_CONFIRM_MS   0U     /* quick but debounced start when EMG stays above threshold */
-#define NODE127_EMG_RESTART_MIN_MS  140U    /* short restart lockout after a real stop */
 #define NODE127_INTENT_ATTACK_ALPHA 0.80f
 #define NODE127_INTENT_RELEASE_ALPHA 0.28f
-#define NODE124_PEAK_HOLD_MS        650U
-#define NODE124_PEAK_RISE_NORM      0.075f
-#define NODE124_PEAK_MIN_NORM       0.140f
 #define NODE124_START_IGNORE_MS     1200U
-#define NODE124_EMG_START_RAW      25.0f
-#define NODE124_EMG_KEEP_RAW       20.0f
 
 /* =============== 三关节协调与幅度限制参数 ===============
  * 肌电决定是否允许运动，IMU 决定实际运动状态。
@@ -244,13 +237,18 @@ static float g_node127_emg_norm = 0.0f;
 static float g_node127_emg_baseline_ch[3] = {0.0f, 0.0f, 0.0f};
 static float g_node127_emg_env_ch[3] = {0.0f, 0.0f, 0.0f};
 static float g_node127_emg_norm_ch[3] = {0.0f, 0.0f, 0.0f};
+static float g_node127_emg_calib_m2_ch[3] = {0.0f, 0.0f, 0.0f};
+static float g_node127_emg_on_delta_ch[3] = {0.0f, 0.0f, 0.0f};
+static float g_node127_emg_off_delta_ch[3] = {0.0f, 0.0f, 0.0f};
+static uint8_t g_node127_emg_intent = 0U;
+static uint8_t g_node127_emg_on_count = 0U;
+static uint8_t g_node127_emg_off_count = 0U;
+static uint8_t g_node127_emg_wait_release = 0U;
+static uint32_t g_node127_emg_intent_tick = 0U;
 static uint8_t g_node127_emg_baseline_valid = 0U;
 static uint8_t g_node127_motion_active = 0U;
-static uint32_t g_node127_last_motion_tick = 0U;
 static float g_node127_motion_level = 0.0f;
 static float g_node127_intent_level = 0.0f;
-static float g_node124_prev_emg_norm = 0.0f;
-static uint32_t g_node124_last_peak_tick = 0U;
 static uint32_t g_node124_ignore_until_tick = 0U;
 static float g_node127_phase_pct = GAIT_START_PHASE_PCT;
 static float g_gait_amp_state = 0.0f;          /* 统一的步态幅值系数，供所有关节使用。 */
@@ -267,18 +265,17 @@ typedef enum {
     NODE127_STATE_IDLE = 2,
     NODE127_STATE_MOVE = 3,
     NODE127_STATE_HOLD = 4,
-    NODE127_STATE_LOST = 5
+    NODE127_STATE_LOST = 5,
+    NODE127_STATE_INTENT_PENDING = 6
 } Node127ControlState_t;
 
 static volatile uint8_t g_node127_ctrl_state = NODE127_STATE_BOOT;
 static uint8_t g_node127_calibrated = 0U;
 static uint32_t g_node127_calib_start_tick = 0U;
 static uint32_t g_node127_calib_count = 0U;
+static uint32_t g_node127_calib_last_sample_tick = 0U;
 static int32_t g_node127_gx_bias_sum = 0;
 static float g_node127_gx_bias = 0.0f;
-static uint32_t g_node127_still_start_tick = 0U;
-static uint32_t g_node127_emg_on_start_tick = 0U;
-static uint32_t g_node127_last_stop_tick = 0U;
 
 
 #define BMI088_SPI_TIMEOUT_MS      10U
@@ -1015,13 +1012,22 @@ static float Node127_GetRelativePitchDeg(void)
     return THIGH_PITCH_SIGN * (((float)g_node127.pitch_q6 - g_node127_pitch_bias) / NODE127_PITCH_Q);
 }
 
+static void Node127_ClearIntent(void)
+{
+    g_node127_emg_intent = 0U;
+    g_node127_emg_on_count = 0U;
+    g_node127_emg_off_count = 0U;
+    g_node127_emg_wait_release = 0U;
+    g_node127_emg_intent_tick = 0U;
+}
+
 static void Node127_ResetCalibration(uint32_t now)
 {
     uint8_t channel;
-
     g_node127_calibrated = 0U;
     g_node127_calib_start_tick = now;
     g_node127_calib_count = 0U;
+    g_node127_calib_last_sample_tick = 0U;
     g_node127_gx_bias_sum = 0;
     g_node127_pitch_bias_sum = 0;
     g_node127_gx_bias = 0.0f;
@@ -1033,12 +1039,14 @@ static void Node127_ResetCalibration(uint32_t now)
         g_node127_emg_baseline_ch[channel] = 0.0f;
         g_node127_emg_env_ch[channel] = 0.0f;
         g_node127_emg_norm_ch[channel] = 0.0f;
+        g_node127_emg_calib_m2_ch[channel] = 0.0f;
+        g_node127_emg_on_delta_ch[channel] = NODE127_EMG_ON_MIN_RAW;
+        g_node127_emg_off_delta_ch[channel] = NODE127_EMG_OFF_MIN_RAW;
     }
+    Node127_ClearIntent();
     g_node127_motion_active = 0U;
     g_node127_motion_level = 0.0f;
     g_node127_intent_level = 0.0f;
-    g_node124_prev_emg_norm = 0.0f;
-    g_node124_last_peak_tick = now - (NODE124_PEAK_HOLD_MS + 1U);
     g_node124_ignore_until_tick = now + NODE124_START_IGNORE_MS;
     g_node127_first_motion_seen = 0U;
     g_gait_amp_state = 0.0f;
@@ -1046,58 +1054,43 @@ static void Node127_ResetCalibration(uint32_t now)
     g_node127_last_phase_pitch_deg = 0.0f;
     g_node127_last_phase_sequence = 0U;
     g_node127_last_imu_motion_tick = 0U;
-    g_node127_still_start_tick = 0U;
-    g_node127_emg_on_start_tick = 0U;
-    g_node127_last_stop_tick = now;
     g_node127_ctrl_state = NODE127_STATE_CALIB;
 }
 
 /* Node127 静止标定只在收到 ID=127 时累计，掉线时保持原状态。 */
 static uint8_t Node127_RunCalibration(uint32_t now)
 {
-    const float emg_raw[3] = {
-        (float)g_node127.emg_front_uv,
-        (float)g_node127.emg_lateral_uv,
-        (float)g_node127.emg_rear_uv
-    };
+    const float emg_raw[3] = {(float)g_node127.emg_front_uv, (float)g_node127.emg_lateral_uv, (float)g_node127.emg_rear_uv};
+    float delta;
+    float sigma;
     uint8_t channel;
-
-    if (g_node127_calib_start_tick == 0U) {
-        Node127_ResetCalibration(now);
-    }
-
-    if (!Node127_DataFresh(now)) {
-        g_node127_ctrl_state = NODE127_STATE_LOST;
-        return 0U;
-    }
-
+    if (g_node127_calib_start_tick == 0U) Node127_ResetCalibration(now);
+    if (!Node127_DataFresh(now)) { g_node127_ctrl_state = NODE127_STATE_LOST; return 0U; }
+    if (g_node127.gyro_tick == g_node127_calib_last_sample_tick) return 0U;
+    g_node127_calib_last_sample_tick = g_node127.gyro_tick;
     g_node127_ctrl_state = NODE127_STATE_CALIB;
     g_node127_gx_bias_sum += (int32_t)g_node127.gx;
     g_node127_pitch_bias_sum += (int32_t)g_node127.pitch_q6;
     g_node127_calib_count++;
-
-    if (g_node127_emg_baseline_valid == 0U) {
-        for (channel = 0U; channel < 3U; channel++) {
-            g_node127_emg_baseline_ch[channel] = emg_raw[channel];
-        }
-        g_node127_emg_baseline_valid = 1U;
-    } else {
-        for (channel = 0U; channel < 3U; channel++) {
-            g_node127_emg_baseline_ch[channel] +=
-                0.02f * (emg_raw[channel] - g_node127_emg_baseline_ch[channel]);
-        }
+    for (channel = 0U; channel < 3U; channel++) {
+        delta = emg_raw[channel] - g_node127_emg_baseline_ch[channel];
+        g_node127_emg_baseline_ch[channel] += delta / (float)g_node127_calib_count;
+        g_node127_emg_calib_m2_ch[channel] += delta * (emg_raw[channel] - g_node127_emg_baseline_ch[channel]);
     }
+    g_node127_emg_baseline_valid = 1U;
     g_node127_emg_baseline = g_node127_emg_baseline_ch[0];
-    if (g_node127_emg_baseline_ch[1] > g_node127_emg_baseline) {
-        g_node127_emg_baseline = g_node127_emg_baseline_ch[1];
-    }
-    if (g_node127_emg_baseline_ch[2] > g_node127_emg_baseline) {
-        g_node127_emg_baseline = g_node127_emg_baseline_ch[2];
-    }
-
+    if (g_node127_emg_baseline_ch[1] > g_node127_emg_baseline) g_node127_emg_baseline = g_node127_emg_baseline_ch[1];
+    if (g_node127_emg_baseline_ch[2] > g_node127_emg_baseline) g_node127_emg_baseline = g_node127_emg_baseline_ch[2];
     if (((now - g_node127_calib_start_tick) >= NODE127_CALIB_MS) && (g_node127_calib_count >= 20U)) {
         g_node127_gx_bias = (float)g_node127_gx_bias_sum / (float)g_node127_calib_count;
         g_node127_pitch_bias = (float)g_node127_pitch_bias_sum / (float)g_node127_calib_count;
+        for (channel = 0U; channel < 3U; channel++) {
+            sigma = sqrtf(g_node127_emg_calib_m2_ch[channel] / (float)(g_node127_calib_count - 1U));
+            g_node127_emg_on_delta_ch[channel] = NODE127_EMG_ON_SIGMA * sigma;
+            if (g_node127_emg_on_delta_ch[channel] < NODE127_EMG_ON_MIN_RAW) g_node127_emg_on_delta_ch[channel] = NODE127_EMG_ON_MIN_RAW;
+            g_node127_emg_off_delta_ch[channel] = NODE127_EMG_OFF_SIGMA * sigma;
+            if (g_node127_emg_off_delta_ch[channel] < NODE127_EMG_OFF_MIN_RAW) g_node127_emg_off_delta_ch[channel] = NODE127_EMG_OFF_MIN_RAW;
+        }
         g_node127_last_phase_pitch_deg = 0.0f;
         g_node127_last_phase_sequence = g_node127.sample_sequence;
         g_node127_calibrated = 1U;
@@ -1105,26 +1098,17 @@ static uint8_t Node127_RunCalibration(uint32_t now)
         g_node127_motion_active = 0U;
         g_node127_motion_level = 0.0f;
         g_node127_intent_level = 0.0f;
-        g_node124_prev_emg_norm = 0.0f;
-        g_node124_last_peak_tick = now - (NODE124_PEAK_HOLD_MS + 1U);
+        Node127_ClearIntent();
         g_node124_ignore_until_tick = now + NODE124_START_IGNORE_MS;
         g_node127_first_motion_seen = 0U;
-        g_node127_emg_on_start_tick = 0U;
-        g_node127_last_motion_tick = now;
-        g_node127_still_start_tick = now;
         return 1U;
     }
-
     return 0U;
 }
 
 static void Node127_EmgUpdate(uint32_t now)
 {
-    const float raw[3] = {
-        (float)g_node127.emg_front_uv,
-        (float)g_node127.emg_lateral_uv,
-        (float)g_node127.emg_rear_uv
-    };
+    const float raw[3] = {(float)g_node127.emg_front_uv, (float)g_node127.emg_lateral_uv, (float)g_node127.emg_rear_uv};
     float diff;
     float active_raw;
     float alpha;
@@ -1133,10 +1117,7 @@ static void Node127_EmgUpdate(uint32_t now)
 
     if ((g_node127.gyro_valid == 0U) || ((now - g_node127.gyro_tick) > NODE127_EMG_TIMEOUT_MS)) {
         g_node127_emg_norm = 0.0f;
-        for (channel = 0U; channel < 3U; channel++) {
-            g_node127_emg_env_ch[channel] *= 0.82f;
-            g_node127_emg_norm_ch[channel] = 0.0f;
-        }
+        for (channel = 0U; channel < 3U; channel++) { g_node127_emg_env_ch[channel] *= 0.82f; g_node127_emg_norm_ch[channel] = 0.0f; }
         return;
     }
 
@@ -1145,6 +1126,8 @@ static void Node127_EmgUpdate(uint32_t now)
             g_node127_emg_baseline_ch[channel] = raw[channel];
             g_node127_emg_env_ch[channel] = 0.0f;
             g_node127_emg_norm_ch[channel] = 0.0f;
+            g_node127_emg_on_delta_ch[channel] = NODE127_EMG_ON_MIN_RAW;
+            g_node127_emg_off_delta_ch[channel] = NODE127_EMG_OFF_MIN_RAW;
         }
         g_node127_emg_baseline = raw[0];
         g_node127_emg_norm = 0.0f;
@@ -1154,23 +1137,16 @@ static void Node127_EmgUpdate(uint32_t now)
 
     for (channel = 0U; channel < 3U; channel++) {
         diff = fabsf(raw[channel] - g_node127_emg_baseline_ch[channel]);
-        if ((g_node127_motion_active == 0U) && (diff < NODE127_EMG_BASELINE_TRACK_RAW)) {
-            g_node127_emg_baseline_ch[channel] +=
-                NODE127_EMG_BASELINE_ALPHA * (raw[channel] - g_node127_emg_baseline_ch[channel]);
+        if ((g_node127_motion_active == 0U) && (g_node127_emg_intent == 0U) && (g_node127_emg_wait_release == 0U) && (diff < g_node127_emg_off_delta_ch[channel])) {
+            g_node127_emg_baseline_ch[channel] += NODE127_EMG_BASELINE_ALPHA * (raw[channel] - g_node127_emg_baseline_ch[channel]);
             diff = fabsf(raw[channel] - g_node127_emg_baseline_ch[channel]);
         }
-
-        alpha = (diff > g_node127_emg_env_ch[channel]) ?
-            NODE127_EMG_ATTACK_ALPHA : NODE127_EMG_RELEASE_ALPHA;
-        g_node127_emg_env_ch[channel] +=
-            alpha * (diff - g_node127_emg_env_ch[channel]);
-        active_raw = g_node127_emg_env_ch[channel] - NODE127_EMG_DEADBAND_RAW;
+        alpha = (diff > g_node127_emg_env_ch[channel]) ? NODE127_EMG_ATTACK_ALPHA : NODE127_EMG_RELEASE_ALPHA;
+        g_node127_emg_env_ch[channel] += alpha * (diff - g_node127_emg_env_ch[channel]);
+        active_raw = g_node127_emg_env_ch[channel] - g_node127_emg_off_delta_ch[channel];
         if (active_raw < 0.0f) active_raw = 0.0f;
-        g_node127_emg_norm_ch[channel] =
-            clampf_local(active_raw / NODE127_EMG_FULL_SCALE_RAW, 0.0f, 1.0f);
-        if (g_node127_emg_norm_ch[channel] > g_node127_emg_norm_ch[max_channel]) {
-            max_channel = channel;
-        }
+        g_node127_emg_norm_ch[channel] = clampf_local(active_raw / NODE127_EMG_FULL_SCALE_RAW, 0.0f, 1.0f);
+        if (g_node127_emg_norm_ch[channel] > g_node127_emg_norm_ch[max_channel]) max_channel = channel;
     }
 
     g_node127_emg_norm = g_node127_emg_norm_ch[max_channel];
@@ -1190,101 +1166,83 @@ static uint8_t Node127_UpdateMotionControl(uint32_t now)
     float gyro_abs;
     float gyro_active;
     float emg_active;
-    float emg_raw;
-    float emg_rise;
     float level;
     float intent_target;
-    uint8_t peak_detected;
-    uint8_t peak_window_active;
+    uint8_t any_on = 0U;
+    uint8_t all_off = 1U;
+    uint8_t channel;
     uint8_t imu_moving;
-
+    uint8_t motion_allowed = 0U;
     if (!Node127_DataFresh(now)) {
         g_node127_ctrl_state = NODE127_STATE_LOST;
         g_node127_motion_active = 0U;
         g_node127_motion_level = 0.0f;
         g_node127_intent_level = 0.0f;
-        g_node127_emg_on_start_tick = 0U;
+        Node127_ClearIntent();
         return 0U;
     }
-
-    if (g_node127_calibrated == 0U) {
-        (void)Node127_RunCalibration(now);
-        return 0U;
-    }
-
+    if (g_node127_calibrated == 0U) { (void)Node127_RunCalibration(now); return 0U; }
     Node127_EmgUpdate(now);
-
     gyro_abs = (float)Node127_GetAbsPitchRateRaw();
-    gyro_active = (gyro_abs - NODE127_GYRO_DEADBAND_RAW) / NODE127_GYRO_FULL_RAW;
-    gyro_active = clampf_local(gyro_active, 0.0f, 1.0f);
-    if (((g_node127.motion_flags & NODE127_IMU_MOVING_FLAG) != 0U) ||
-        (gyro_abs >= NODE127_GYRO_DEADBAND_RAW)) {
-        g_node127_last_imu_motion_tick = now;
-    }
-    imu_moving = ((g_node127_last_imu_motion_tick != 0U) &&
-                  ((now - g_node127_last_imu_motion_tick) <= NODE127_MOTION_HOLD_MS)) ? 1U : 0U;
+    gyro_active = clampf_local((gyro_abs - NODE127_GYRO_DEADBAND_RAW) / NODE127_GYRO_FULL_RAW, 0.0f, 1.0f);
+    if (((g_node127.motion_flags & NODE127_IMU_MOVING_FLAG) != 0U) || (gyro_abs >= NODE127_GYRO_DEADBAND_RAW)) g_node127_last_imu_motion_tick = now;
+    imu_moving = ((g_node127_last_imu_motion_tick != 0U) && ((now - g_node127_last_imu_motion_tick) <= NODE127_MOTION_HOLD_MS)) ? 1U : 0U;
     emg_active = Node127_EmgNorm(now);
-    emg_raw = (float)g_node127.emg;
     if ((int32_t)(now - g_node124_ignore_until_tick) < 0) {
-        g_node124_prev_emg_norm = emg_active;
-        g_node124_last_peak_tick = now - (NODE124_PEAK_HOLD_MS + 1U);
+        Node127_ClearIntent();
         g_node127_motion_active = 0U;
         g_node127_motion_level = 0.0f;
         g_node127_intent_level = 0.0f;
         g_node127_ctrl_state = NODE127_STATE_IDLE;
         return 0U;
     }
-
-    emg_rise = emg_active - g_node124_prev_emg_norm;
-    peak_detected = 0U;
-    if ((emg_raw >= NODE124_EMG_START_RAW) && (emg_active >= NODE127_MOVE_ON_EMG_NORM)) {
-        peak_detected = 1U;
+    for (channel = 0U; channel < 3U; channel++) {
+        if (g_node127_emg_env_ch[channel] >= g_node127_emg_on_delta_ch[channel]) any_on = 1U;
+        if (g_node127_emg_env_ch[channel] > g_node127_emg_off_delta_ch[channel]) all_off = 0U;
     }
-    else if ((emg_raw >= NODE124_EMG_START_RAW) && (emg_active >= NODE124_PEAK_MIN_NORM) && (emg_rise >= NODE124_PEAK_RISE_NORM)) {
-        peak_detected = 1U;
-    }
-
-    if (peak_detected != 0U) {
-        g_node124_last_peak_tick = now;
-        g_node127_first_motion_seen = 1U;
-        g_node127_still_start_tick = 0U;
-    }
-
-    peak_window_active = ((now - g_node124_last_peak_tick) <= NODE124_PEAK_HOLD_MS) ? 1U : 0U;
-
-    intent_target = peak_window_active ? emg_active : 0.0f;
-    if (peak_detected != 0U && intent_target < NODE127_MOVE_ON_EMG_NORM) {
-        intent_target = NODE127_MOVE_ON_EMG_NORM;
-    }
-    if (g_node127_intent_level < intent_target) {
-        g_node127_intent_level += NODE127_INTENT_ATTACK_ALPHA * (intent_target - g_node127_intent_level);
+    if (g_node127_emg_wait_release != 0U) {
+        g_node127_emg_off_count = all_off ? (uint8_t)(g_node127_emg_off_count + 1U) : 0U;
+        if (g_node127_emg_off_count >= NODE127_EMG_OFF_COUNT) Node127_ClearIntent();
+    } else if (g_node127_emg_intent == 0U) {
+        g_node127_emg_on_count = any_on ? (uint8_t)(g_node127_emg_on_count + 1U) : 0U;
+        if (g_node127_emg_on_count >= NODE127_EMG_ON_COUNT) {
+            g_node127_emg_intent = 1U;
+            g_node127_emg_intent_tick = now;
+            g_node127_emg_on_count = 0U;
+        }
     } else {
-        g_node127_intent_level += NODE127_INTENT_RELEASE_ALPHA * (intent_target - g_node127_intent_level);
+        g_node127_emg_off_count = all_off ? (uint8_t)(g_node127_emg_off_count + 1U) : 0U;
+        if (g_node127_emg_off_count >= NODE127_EMG_OFF_COUNT) { g_node127_emg_intent = 0U; g_node127_emg_off_count = 0U; }
     }
-
-    g_node124_prev_emg_norm = emg_active;
-
-    if (peak_window_active == 0U) {
+    intent_target = (g_node127_emg_intent != 0U) ? emg_active : 0.0f;
+    if ((g_node127_emg_intent != 0U) && (intent_target < 0.17f)) intent_target = 0.17f;
+    if (g_node127_intent_level < intent_target) g_node127_intent_level += NODE127_INTENT_ATTACK_ALPHA * (intent_target - g_node127_intent_level);
+    else g_node127_intent_level += NODE127_INTENT_RELEASE_ALPHA * (intent_target - g_node127_intent_level);
+    if (g_node127_ctrl_state == NODE127_STATE_MOVE) {
+        if ((g_node127_emg_intent != 0U) || (imu_moving != 0U)) motion_allowed = 1U;
+    } else if (g_node127_emg_intent != 0U) {
+        if (imu_moving != 0U) { motion_allowed = 1U; g_node127_first_motion_seen = 1U; }
+        else if ((now - g_node127_emg_intent_tick) <= NODE127_INTENT_WAIT_IMU_MS) {
+            g_node127_ctrl_state = NODE127_STATE_INTENT_PENDING;
+            g_node127_motion_active = 0U;
+            g_node127_motion_level = 0.0f;
+            return 0U;
+        } else {
+            g_node127_emg_intent = 0U;
+            g_node127_emg_wait_release = 1U;
+            g_node127_emg_off_count = 0U;
+        }
+    }
+    if (motion_allowed == 0U) {
         g_node127_motion_active = 0U;
         g_node127_motion_level = 0.0f;
-        g_node127_emg_on_start_tick = 0U;
-        g_node127_last_stop_tick = now;
         g_node127_ctrl_state = g_node127_first_motion_seen ? NODE127_STATE_HOLD : NODE127_STATE_IDLE;
         return 0U;
     }
-
-    if (imu_moving == 0U) {
-        g_node127_motion_active = 0U;
-        g_node127_motion_level = 0.0f;
-        g_node127_ctrl_state = NODE127_STATE_HOLD;
-        return 0U;
-    }
-
     level = 0.90f * g_node127_intent_level + 0.10f * gyro_active;
     if (level < 0.35f) level = 0.35f;
     g_node127_motion_level = clampf_local(level, 0.0f, 1.0f);
     g_node127_motion_active = 1U;
-    g_node127_last_motion_tick = now;
     g_node127_ctrl_state = NODE127_STATE_MOVE;
     return 1U;
 }

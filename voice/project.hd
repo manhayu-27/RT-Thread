@@ -11,9 +11,9 @@ static uint32_t query_started_ms;
 void ASR_CODE();
 void asrpro_uart_task();
 
-//{speak:小蝶-清新女声,vol:10,speed:10,platform:haohaodada}
-//{playid:10001,voice:欢迎使用语音助手，用天问五幺唤醒我。}
-//{playid:10002,voice:我退下了，用天问五幺唤醒我}
+//{speak:小爱-活泼女声,vol:10,speed:11,platform:haohaodada,version:V3}
+//{playid:10001,voice:欢迎使用智能假肢助手，用小朱唤醒我。}
+//{playid:10002,voice:}
 //{playid:10003,voice:当前设备温度为}
 //{playid:10004,voice:摄氏度}
 //{playid:10005,voice:当前心率为}
@@ -74,9 +74,9 @@ static void speak_coordinate(int32_t latitude_e6, int32_t longitude_e6)
 {
   enter_wakeup(10000);
   play_audio(10010);
-  play_num((int64_t)latitude_e6, 1);
+  play_num((int64_t)latitude_e6 / 10000, 1);
   play_audio(10011);
-  play_num((int64_t)longitude_e6, 1);
+  play_num((int64_t)longitude_e6 / 10000, 1);
 }
 
 static void handle_asrpro_frame(String frame)
@@ -175,7 +175,7 @@ void ASR_CODE(){
 void hardware_init(){
   //需要操作系统启动后初始化的内容
   //音量范围1-7
-  vol_set(7);
+  vol_set(5);
   setPinFun(13,SECOND_FUNCTION);
   setPinFun(14,SECOND_FUNCTION);
   Serial.begin(9600);
@@ -202,6 +202,8 @@ void setup()
   setPinFun(4,FIRST_FUNCTION);
   pinMode(4,output);
 }
+
+
 
 
 

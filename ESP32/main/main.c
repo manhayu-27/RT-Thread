@@ -51,6 +51,7 @@ static const uart_port_t ASRPRO_UART = UART_NUM_0;
 #define WEB_BATCH_SIZE 10U
 #define WEB_PAYLOAD_SIZE 3072U
 #define WEB_SAMPLE_FIELDS 12U
+#define MAX_WEBSOCKET_CLIENTS 3U
 #define HEART_RATE_MIN_INTERVAL_US 300000LL
 #define HEART_RATE_MAX_INTERVAL_US 2000000LL
 #define HEART_RATE_STALE_US 3000000LL
@@ -105,7 +106,8 @@ static volatile bool ui_show_ch1 = true;
 static volatile bool ui_show_ch2 = true;
 static volatile bool ui_clear_request;
 static httpd_handle_t web_server;
-static volatile int websocket_client_fd = -1;
+static int websocket_client_fds[MAX_WEBSOCKET_CLIENTS] = {-1, -1, -1};
+static portMUX_TYPE websocket_clients_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int64_t epoch_offset_us;
 static portMUX_TYPE time_sync_mux = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE gps_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -620,26 +622,70 @@ static void apply_phone_location(const char *payload)
     portEXIT_CRITICAL(&gps_mux);
 }
 
+static void websocket_client_add(int client_fd)
+{
+    portENTER_CRITICAL(&websocket_clients_mux);
+    for (size_t index = 0U; index < MAX_WEBSOCKET_CLIENTS; ++index) {
+        if (websocket_client_fds[index] == client_fd) {
+            portEXIT_CRITICAL(&websocket_clients_mux);
+            return;
+        }
+    }
+    for (size_t index = 0U; index < MAX_WEBSOCKET_CLIENTS; ++index) {
+        if (websocket_client_fds[index] < 0) {
+            websocket_client_fds[index] = client_fd;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&websocket_clients_mux);
+}
+
+static void websocket_client_remove(int client_fd)
+{
+    portENTER_CRITICAL(&websocket_clients_mux);
+    for (size_t index = 0U; index < MAX_WEBSOCKET_CLIENTS; ++index) {
+        if (websocket_client_fds[index] == client_fd) {
+            websocket_client_fds[index] = -1;
+        }
+    }
+    portEXIT_CRITICAL(&websocket_clients_mux);
+}
+
+static size_t websocket_client_snapshot(int *client_fds)
+{
+    size_t count = 0U;
+
+    portENTER_CRITICAL(&websocket_clients_mux);
+    for (size_t index = 0U; index < MAX_WEBSOCKET_CLIENTS; ++index) {
+        if (websocket_client_fds[index] >= 0) {
+            client_fds[count++] = websocket_client_fds[index];
+        }
+    }
+    portEXIT_CRITICAL(&websocket_clients_mux);
+    return count;
+}
+
 static esp_err_t websocket_handler(httpd_req_t *req)
 {
     httpd_ws_frame_t frame = {0};
     char payload[160] = {0};
     esp_err_t status;
+    const int client_fd = httpd_req_to_sockfd(req);
 
     if (req->method == HTTP_GET) {
-        websocket_client_fd = httpd_req_to_sockfd(req);
+        websocket_client_add(client_fd);
         return ESP_OK;
     }
 
     frame.payload = (uint8_t *)payload;
     status = httpd_ws_recv_frame(req, &frame, sizeof(payload) - 1U);
     if (status != ESP_OK) {
-        websocket_client_fd = -1;
+        websocket_client_remove(client_fd);
         return status;
     }
 
     if (frame.type == HTTPD_WS_TYPE_CLOSE) {
-        websocket_client_fd = -1;
+        websocket_client_remove(client_fd);
         return ESP_OK;
     }
 
@@ -758,11 +804,16 @@ static bool append_web_payload(size_t *used, const char *format, ...)
 static void websocket_send_batch(void)
 {
     httpd_ws_frame_t frame = {0};
-    const int client_fd = websocket_client_fd;
+    int client_fds[MAX_WEBSOCKET_CLIENTS];
+    size_t client_count;
     gps_fix_t gps;
     size_t used = 0;
 
-    if (web_server == NULL || client_fd < 0) {
+    if (web_server == NULL) {
+        return;
+    }
+    client_count = websocket_client_snapshot(client_fds);
+    if (client_count == 0U) {
         return;
     }
 
@@ -833,8 +884,10 @@ static void websocket_send_batch(void)
     frame.type = HTTPD_WS_TYPE_TEXT;
     frame.payload = (uint8_t *)web_payload;
     frame.len = used;
-    if (httpd_ws_send_frame_async(web_server, client_fd, &frame) != ESP_OK) {
-        websocket_client_fd = -1;
+    for (size_t index = 0U; index < client_count; ++index) {
+        if (httpd_ws_send_frame_async(web_server, client_fds[index], &frame) != ESP_OK) {
+            websocket_client_remove(client_fds[index]);
+        }
     }
 }
 
