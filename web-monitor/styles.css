@@ -1516,6 +1516,51 @@ dialog::backdrop {
   color: var(--green);
 }
 
+.voice-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(255,255,255,.28);
+  border-radius: 999px;
+  background: rgba(2,44,34,.32);
+  color: rgba(236,253,245,.72);
+  font: 700 12px/1 "Fira Code", monospace;
+}
+
+.voice-toggle strong { color: #fca5a5; }
+.voice-toggle-dot { width: 8px; height: 8px; border-radius: 50%; background: #f87171; box-shadow: 0 0 0 4px rgba(248,113,113,.16); }
+.voice-toggle.enabled { border-color: rgba(94,234,212,.52); color: #ecfdf5; }
+.voice-toggle.enabled strong { color: #99f6e4; }
+.voice-toggle.enabled .voice-toggle-dot { background: #2dd4bf; box-shadow: 0 0 0 4px rgba(45,212,191,.16); }
+
+.ai-status.working {
+  border-color: rgba(251, 191, 36, .65);
+  background: rgba(120, 53, 15, .16);
+  color: #fde68a;
+}
+
+.ai-status.working::before,
+.chat-message.pending::before {
+  display: inline-block;
+  width: .72em;
+  height: .72em;
+  margin-right: .48em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ai-spin .8s linear infinite;
+  content: "";
+}
+
+.chat-message.pending {
+  color: #687b75;
+  background: #eef6f1;
+}
+
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+
 .ai-task-select {
   display: grid;
   gap: 7px;
@@ -1920,3 +1965,88 @@ body.dark .ai-status.ready {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Premium telemetry layer: visual-only overrides; existing data bindings remain unchanged. */
+.topbar {
+  position: relative;
+  isolation: isolate;
+  min-height: 158px;
+  border-color: rgba(174, 255, 226, .16);
+  background: radial-gradient(circle at 60% 45%, rgba(45, 212, 191, .17), transparent 14rem), radial-gradient(circle at 85% 15%, rgba(251, 146, 60, .18), transparent 17rem), linear-gradient(125deg, #09261f, #164c41 52%, #0c302b);
+}
+.topbar::after { position: absolute; z-index: -1; inset: 0; background-image: linear-gradient(rgba(217,249,234,.05) 1px,transparent 1px), linear-gradient(90deg,rgba(217,249,234,.05) 1px,transparent 1px); background-size: 28px 28px; content: ""; mask-image: linear-gradient(90deg,transparent 10%,#000 55%,transparent); }
+.topbar-copy h1 { letter-spacing: -.045em; }
+.topbar-pulse { display: flex; align-items: center; gap: 12px; margin-left: auto; padding: 10px 18px 10px 10px; border: 1px solid rgba(220,252,231,.18); border-radius: 14px; background: rgba(2,28,23,.28); backdrop-filter: blur(12px); }
+.topbar-pulse span,.topbar-pulse small,.command-card > div > span,.command-card small { display: block; color: rgba(224,255,242,.62); font-size: 10px; letter-spacing: .12em; }
+.topbar-pulse strong { display: block; margin: 3px 0; color: #fff; font: 600 12px "Fira Code",monospace; }
+.topbar-pulse small { color: #a7f3d0; letter-spacing: .04em; }
+.pulse-orbit { display: grid; position: relative; width: 38px; height: 38px; place-items: center; border: 1px solid rgba(94,234,212,.5); border-radius: 50%; color: #99f6e4; }
+.pulse-orbit i { position: absolute; top: 3px; right: 0; width: 7px; height: 7px; border-radius: 50%; background: #fb923c; box-shadow: 0 0 0 4px rgba(251,146,60,.12),0 0 14px #fb923c; }
+.pulse-orbit svg { width: 21px; stroke-width: 2.2; }
+
+.command-deck { display: grid; grid-template-columns: minmax(260px,1.25fr) repeat(2,minmax(190px,.8fr)); gap: 12px; margin: 14px 0 20px; }
+.command-card { display: flex; min-height: 112px; align-items: center; gap: 13px; padding: 18px; overflow: hidden; border: 1px solid rgba(20,83,74,.1); border-radius: 16px; background: rgba(255,255,255,.78); box-shadow: 0 10px 30px rgba(20,83,74,.06); }
+.primary-command { display: block; position: relative; color: #effff8; border-color: transparent; background: linear-gradient(120deg,#115e59,#0f766e 60%,#16826d); }
+.primary-command::after { position: absolute; right: -25px; bottom: -55px; width: 180px; height: 180px; border: 1px solid rgba(255,255,255,.2); border-radius: 50%; box-shadow: 0 0 0 24px rgba(255,255,255,.05),0 0 0 48px rgba(255,255,255,.035); content: ""; }
+.command-eyebrow { display: block; color: #99f6e4; font: 600 10px "Fira Code",monospace; letter-spacing: .14em; }
+.primary-command strong { display: block; margin: 7px 0 5px; font-size: 17px; letter-spacing: -.025em; }
+.primary-command p { max-width: 510px; margin: 0; color: rgba(236,253,245,.72); font-size: 12px; line-height: 1.65; }
+.command-tags { display: flex; gap: 7px; margin-top: 11px; }
+.command-tags span { padding: 3px 6px; border: 1px solid rgba(255,255,255,.18); border-radius: 5px; background: rgba(2,44,34,.2); color: #d1fae5; font: 600 9px "Fira Code",monospace; letter-spacing: .06em; }
+.command-icon { display: grid; flex: none; width: 38px; height: 38px; place-items: center; border-radius: 12px; }
+.command-icon svg { width: 20px; }
+.command-safety .command-icon { background: #e9fbf2; color: #087f5b; }
+.command-ai .command-icon { background: #f3edff; color: #7648bd; }
+.command-card > div > span { color: #73908a; font-family: "Fira Code",monospace; }
+.command-card > div > strong { display: block; margin: 4px 0; color: #17352f; font-size: 13px; }
+.command-card small { color: #7b8d87; letter-spacing: 0; }
+
+.connection-panel,.task-panel,.metric-card,.wave-card,.ai-card,.records-card,.replay-panel { border-color: rgba(23,83,73,.11); box-shadow: 0 12px 32px rgba(15,75,65,.065); }
+.metric-card { position: relative; overflow: hidden; }
+.metric-card::before { position: absolute; top: 0; left: 18px; right: 18px; height: 2px; border-radius: 10px; background: linear-gradient(90deg,var(--teal),transparent 68%); content: ""; opacity: .7; }
+.metric-card:hover { transform: translateY(-3px); box-shadow: 0 18px 38px rgba(15,75,65,.12); }
+.wave-card { background: linear-gradient(145deg,rgba(255,255,255,.94),rgba(247,253,250,.86)); }
+.wave-stage { background-color: #f8fcfa; background-image: linear-gradient(rgba(15,118,110,.07) 1px,transparent 1px),linear-gradient(90deg,rgba(15,118,110,.07) 1px,transparent 1px); background-size: 20px 20px; border-radius: 12px; }
+body.dark .wave-stage { background-color: #102b25; background-image: linear-gradient(rgba(153,246,228,.075) 1px,transparent 1px),linear-gradient(90deg,rgba(153,246,228,.075) 1px,transparent 1px); }
+
+.ai-intro { position: relative; overflow: hidden; border: 0; color: #eefcf5; background: linear-gradient(120deg,#102c26,#164e43 58%,#0f766e); box-shadow: 0 18px 44px rgba(10,54,45,.18); }
+.ai-intro::after { position: absolute; right: 20%; top: -120px; width: 230px; height: 230px; border: 1px solid rgba(255,255,255,.16); border-radius: 50%; box-shadow: 0 0 0 26px rgba(255,255,255,.04),0 0 0 52px rgba(255,255,255,.025); content: ""; }
+.ai-intro h2 { color: #fff; }
+.ai-intro p { max-width: 620px; color: rgba(219,255,240,.72); }
+.ai-status { position: relative; z-index: 1; max-width: 300px; border-color: rgba(220,252,231,.22); background: rgba(2,44,34,.28); color: #d1fae5; }
+.ai-status.ready { border-color: rgba(110,231,183,.45); background: rgba(6,78,59,.42); color: #d1fae5; }
+.report-card { border-top: 3px solid #0f766e; }
+.chat-card { border-top: 3px solid #8b6ba8; }
+.ai-report,.chat-log { background: linear-gradient(145deg,#f8fcfa,#f1f8f5); border-color: rgba(15,118,110,.1); }
+
+@media (max-width: 1040px) { .topbar { align-items: flex-start; flex-wrap: wrap; } .topbar-pulse { margin-left: 0; } .command-deck { grid-template-columns: 1fr 1fr; } .primary-command { grid-column: 1 / -1; } }
+@media (max-width: 640px) { .topbar { min-height: auto; padding: 21px; } .topbar-pulse { width: 100%; } .command-deck { grid-template-columns: 1fr; } .primary-command { grid-column: auto; } .command-card { min-height: 96px; } }
+
+/* The low-value transport cards are intentionally removed from the clinical overview. */
+.metric-card:has(#signalQuality),
+.metric-card:has(#sampleRate) { display: none; }
+
+.voice-orb {
+  position: fixed;
+  z-index: 30;
+  right: 28px;
+  bottom: 28px;
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  border: 1px solid rgba(167,243,208,.52);
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 25%, #2dd4bf, #0f766e 58%, #064e3b);
+  box-shadow: 0 16px 38px rgba(6,78,59,.36), inset 0 1px rgba(255,255,255,.32);
+  color: #ecfdf5;
+  touch-action: none;
+}
+.voice-orb svg { width: 26px; height: 26px; stroke-width: 2; }
+.voice-orb strong { position: absolute; top: 79px; min-width: 90px; color: #4b635d; font: 600 10px "Fira Code",monospace; text-align: center; }
+.voice-ring { position: absolute; inset: -7px; border: 1px solid rgba(45,212,191,.46); border-radius: 50%; opacity: .7; }
+.voice-orb.listening { background: radial-gradient(circle at 34% 25%, #fb923c, #e55b4f 65%, #9f1239); transform: scale(1.08); }
+.voice-orb.listening .voice-ring { animation: voice-pulse 1s ease-out infinite; border-color: #fb923c; }
+@keyframes voice-pulse { 0% { transform: scale(.84); opacity: 1; } 100% { transform: scale(1.45); opacity: 0; } }
+body.dark .voice-orb strong { color: #d1fae5; }
+@media (max-width: 640px) { .voice-orb { right: 20px; bottom: 20px; width: 64px; height: 64px; } .voice-orb strong { top: 70px; } }

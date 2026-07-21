@@ -13,6 +13,8 @@ venv/
 .env
 .env.*
 !.env.example
+/web-monitor/.env
+/AndroidStudioProjects/ESP32Monitor/api.properties
 
 # Web monitor runtime data
 /web-monitor/data/*

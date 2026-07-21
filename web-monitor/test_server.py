@@ -38,12 +38,35 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(summary["channels"]["ecg"]["rms"], 1.0)
             self.assertEqual(summary["alarmSampleCounts"]["ecgAbnormal"], 1)
             self.assertEqual(summary["alarmSampleCounts"]["emg1High"], 1)
+            self.assertEqual(summary["motion"]["fallSamples"], 0)
+            self.assertEqual(summary["motion"]["gyroMagnitudePeakDps"], 0.0)
 
         response = FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
         with patch.dict(os.environ, {"ARK_API_KEY": "test-key"}), patch.object(
             server, "urlopen", return_value=response
         ):
             self.assertEqual(server.call_ark([{"role": "user", "content": "hi"}]), "ok")
+
+    def test_ark_uses_separate_chat_and_report_models(self):
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(b'{"choices":[{"message":{"content":"ok"}}]}')
+
+        with patch.dict(
+            os.environ,
+            {
+                "ARK_API_KEY": "test-key",
+                "ARK_MODEL_CHAT": "chat-endpoint",
+                "ARK_MODEL_REPORT": "report-endpoint",
+            },
+            clear=False,
+        ), patch.object(server, "urlopen", side_effect=fake_urlopen):
+            server.call_ark([{"role": "user", "content": "chat"}], kind="chat")
+            server.call_ark([{"role": "user", "content": "report"}], kind="report")
+
+        self.assertEqual([request["model"] for request in requests], ["chat-endpoint", "report-endpoint"])
 
 
 if __name__ == "__main__":

@@ -39,8 +39,15 @@
       <main class="main-content">
         <header class="topbar">
           <div class="topbar-copy"><p class="eyebrow">LIVE BIOSIGNAL CONSOLE</p><h1 id="pageTitle">实时生理信号</h1><span>精密采集 · 实时分析 · 本地存档</span></div>
+          <div class="topbar-pulse" aria-label="系统能力概览">
+            <div class="pulse-orbit"><i></i><svg viewBox="0 0 24 24"><path d="M3 12h4l2-6 4 12 3-8 2 2h3" /></svg></div>
+            <div><span>BIOSIGNAL ENGINE</span><strong>ECG · EMG · IMU</strong><small>本地安全引擎在线</small></div>
+          </div>
           <div class="top-actions">
             <div class="clock"><span id="dateText">—</span><strong id="timeText">—</strong></div>
+            <button class="voice-toggle" id="voiceToggle" type="button" aria-pressed="true" aria-label="切换 AI 语音朗读">
+              <span class="voice-toggle-dot"></span><span>AI 朗读</span><strong>开</strong>
+            </button>
             <button class="icon-button" id="themeButton" aria-label="切换明暗主题">
               <svg viewBox="0 0 24 24"><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4" /><circle cx="12" cy="12" r="4" /></svg>
             </button>
@@ -67,6 +74,23 @@
               <button class="button secondary" id="demoButton"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>模拟数据</button>
               <button class="button primary" id="connectButton">连接设备</button>
             </div>
+          </section>
+
+          <section class="command-deck" aria-label="系统状态概览">
+            <article class="command-card primary-command">
+              <span class="command-eyebrow">CONTROL CENTER</span>
+              <strong>从信号到安全响应</strong>
+              <p>设备端完成采集、滤波与跌倒保护；上位机负责可视化、记录和 AI 解读。</p>
+              <div class="command-tags"><span>500 Hz</span><span>4 CHANNELS</span><span>LOCAL FIRST</span></div>
+            </article>
+            <article class="command-card command-safety">
+              <span class="command-icon"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v5c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6l-8-3Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></span>
+              <div><span>SAFETY CORE</span><strong id="liveRiskState">正在等待运动数据</strong><small id="livePostureState">本地安全控制不依赖云端模型</small></div>
+            </article>
+            <article class="command-card command-ai">
+              <span class="command-icon"><svg viewBox="0 0 24 24"><path d="M12 3v3M5.6 5.6l2.1 2.1M3 12h3M18 12h3M16.3 7.7l2.1-2.1M8 16h8M9 20h6"/><path d="M8 12a4 4 0 1 1 8 0c0 1.8-1 2.7-2 4h-4c-1-1.3-2-2.2-2-4Z"/></svg></span>
+              <div><span>AI INSIGHT</span><strong id="liveAiSummary">等待足够的实时信号</strong><small>仅上传本地统计摘要</small></div>
+            </article>
           </section>
 
           <section class="task-panel">
@@ -148,7 +172,7 @@
           <div class="ai-grid">
             <section class="ai-card report-card">
               <div class="ai-card-head"><div><span class="section-kicker">SIGNAL REPORT</span><h3>AI 健康观察报告</h3></div><button class="button primary" id="generateReport">生成报告</button></div>
-              <div class="ai-report" id="aiReport">选择一个已有采集任务，然后生成报告。报告仅用于工程调试或教学研究，不用于医学诊断。</div>
+              <div class="ai-report" id="aiReport">选择一个已有采集任务，然后生成报告。</div>
             </section>
             <section class="ai-card chat-card">
               <div class="ai-card-head"><div><span class="section-kicker">LANGUAGE CHAT</span><h3>健康助手对话</h3></div><button class="mini-button" id="clearChat">清空</button></div>
@@ -173,10 +197,16 @@
           <label>EMG2 RMS 上限（mV）<input id="emg2Limit" type="number" min="0.01" step="0.01" /></label>
           <label>EMG3 RMS 上限（mV）<input id="emg3Limit" type="number" min="0.01" step="0.01" /></label>
           <label class="check-label"><input id="ecgRules" type="checkbox" />启用心率不齐与漏搏演示检测</label>
+          <label>紧急联系人手机号<input id="emergencyPhone" type="tel" inputmode="tel" placeholder="例如：13800138000" /></label>
+          <label class="check-label"><input id="emergencySmsEnabled" type="checkbox" />检测到跌倒时发送短信提醒</label>
+          <label class="check-label"><input id="aiVoiceEnabled" type="checkbox" />AI 回答后自动语音朗读</label>
         </div>
         <div class="dialog-actions"><button value="cancel" class="button secondary">取消</button><button value="default" class="button primary" id="saveSettings">保存设置</button></div>
       </form>
     </dialog>
+    <button class="voice-orb" id="voiceOrb" type="button" aria-label="长按进行语音问答">
+      <span class="voice-ring"></span><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg><strong>长按问 AI</strong>
+    </button>
     <div class="toast" id="toast" role="status"></div>
     <script src="./app.js"></script>
   </body>

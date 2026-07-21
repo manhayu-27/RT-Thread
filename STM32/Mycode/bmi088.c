@@ -3,6 +3,8 @@
 #include "spi.h"
 #include "usart.h"
 #include "bmi088.h"
+#include "eeg_raw_stream.h"
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -36,13 +38,17 @@
 #define BMI088_GYRO_DPS_PER_LSB     (500.0f / 32768.0f)
 #define BMI088_DEBUG_STREAM_ENABLE  0U
 #define BMI088_PRINT_INTERVAL_MS    10U
+#define BMI088_FALL_CAN_INTERVAL_MS 50U
 #define BMI088_RAD_TO_DEG           57.2957795f
 #define BMI088_PITCH_ACCEL_ALPHA    0.02f
-#define BMI088_FALL_FLEX_DEG        45.0f
-#define BMI088_FALL_Y_G             0.70f
-#define BMI088_FALL_FREE_G_SQ       (0.60f * 0.60f)
-#define BMI088_FALL_IMPACT_G_SQ     (1.80f * 1.80f)
-#define BMI088_FALL_CONFIRM_COUNT   3U
+#define BMI088_GRAVITY_LPF_ALPHA    0.05f
+#define BMI088_FALL_ENTER_UPRIGHT_COS 0.342020f
+#define BMI088_FALL_EXIT_UPRIGHT_COS  0.819152f
+#define BMI088_FALL_CONFIRM_COUNT   70U
+#define BMI088_FALL_RECOVER_COUNT   100U
+#define BMI088_FALL_FREEFALL_G       0.35f
+#define BMI088_FALL_IMPACT_G         2.20f
+#define BMI088_FALL_IMPACT_WINDOW_COUNT 200U
 #define BMI088_FULL_CIRCLE_DEG      360.0f
 #define BMI088_HALF_CIRCLE_DEG      180.0f
 
@@ -58,6 +64,18 @@ static volatile float latest_temperature_c;
 static volatile uint8_t latest_fall;
 static volatile uint8_t latest_motion_valid;
 static volatile uint8_t motion_stream_to_esp32;
+
+typedef struct
+{
+    uint8_t gravity_ready;
+    uint8_t confirm_count;
+    uint8_t recover_count;
+    uint8_t fall_latched;
+    uint8_t impact_window_count;
+    float gravity_x_g;
+    float gravity_y_g;
+    float gravity_z_g;
+} bmi088_fall_state_t;
 
 static void accel_select(void)
 {
@@ -524,43 +542,145 @@ float bmi088_calc_flex_x_deg(const bmi088_accel_data_t *accel)
     return angle_deg;
 }
 
-uint8_t bmi088_detect_fall(const bmi088_accel_data_t *accel,
-                           float flex_x_deg)
+static uint8_t bmi088_fall_update(bmi088_fall_state_t *state,
+                                  const bmi088_accel_data_t *accel)
 {
-    static uint8_t confirm_count;
-    float acc_g_sq;
-    float flex_from_upright_deg;
-    uint8_t abnormal;
+    float gravity_norm;
+    float raw_norm;
+    float upright_cos;
 
-    if (accel == RT_NULL)
+    if ((state == RT_NULL) || (accel == RT_NULL))
     {
-        return 0U;
+        return (state != RT_NULL) ? state->fall_latched : 0U;
     }
 
-    acc_g_sq = (accel->x_g * accel->x_g) +
-               (accel->y_g * accel->y_g) +
-               (accel->z_g * accel->z_g);
-    flex_from_upright_deg = (flex_x_deg > BMI088_HALF_CIRCLE_DEG) ?
-                            (BMI088_FULL_CIRCLE_DEG - flex_x_deg) :
-                            flex_x_deg;
-    abnormal = ((flex_from_upright_deg >= BMI088_FALL_FLEX_DEG) ||
-                (fabsf(accel->y_g) <= BMI088_FALL_Y_G) ||
-                (acc_g_sq <= BMI088_FALL_FREE_G_SQ) ||
-                (acc_g_sq >= BMI088_FALL_IMPACT_G_SQ)) ? 1U : 0U;
-
-    if (abnormal != 0U)
+    raw_norm = sqrtf((accel->x_g * accel->x_g) +
+                     (accel->y_g * accel->y_g) +
+                     (accel->z_g * accel->z_g));
+    if ((raw_norm <= BMI088_FALL_FREEFALL_G) ||
+        (raw_norm >= BMI088_FALL_IMPACT_G))
     {
-        if (confirm_count < BMI088_FALL_CONFIRM_COUNT)
+        state->impact_window_count = BMI088_FALL_IMPACT_WINDOW_COUNT;
+    }
+    else if (state->impact_window_count > 0U)
+    {
+        state->impact_window_count--;
+    }
+
+    if (state->gravity_ready == 0U)
+    {
+        state->gravity_x_g = accel->x_g;
+        state->gravity_y_g = accel->y_g;
+        state->gravity_z_g = accel->z_g;
+        state->gravity_ready = 1U;
+    }
+    else
+    {
+        state->gravity_x_g += BMI088_GRAVITY_LPF_ALPHA *
+                              (accel->x_g - state->gravity_x_g);
+        state->gravity_y_g += BMI088_GRAVITY_LPF_ALPHA *
+                              (accel->y_g - state->gravity_y_g);
+        state->gravity_z_g += BMI088_GRAVITY_LPF_ALPHA *
+                              (accel->z_g - state->gravity_z_g);
+    }
+
+    gravity_norm = sqrtf((state->gravity_x_g * state->gravity_x_g) +
+                         (state->gravity_y_g * state->gravity_y_g) +
+                         (state->gravity_z_g * state->gravity_z_g));
+    if (gravity_norm < 0.20f)
+    {
+        return state->fall_latched;
+    }
+
+    /* A thigh becomes horizontal during normal sitting or leg raising. Require
+     * a recent free-fall or hard impact before accepting a sustained sideways
+     * gravity direction as a fall.
+     */
+    upright_cos = -state->gravity_y_g / gravity_norm;
+    if (upright_cos > 1.0f)
+    {
+        upright_cos = 1.0f;
+    }
+    else if (upright_cos < -1.0f)
+    {
+        upright_cos = -1.0f;
+    }
+    if (state->fall_latched == 0U)
+    {
+        state->recover_count = 0U;
+        if ((state->impact_window_count > 0U) &&
+            (upright_cos <= BMI088_FALL_ENTER_UPRIGHT_COS))
         {
-            confirm_count++;
+            if (state->confirm_count < BMI088_FALL_CONFIRM_COUNT)
+            {
+                state->confirm_count++;
+            }
+            if (state->confirm_count >= BMI088_FALL_CONFIRM_COUNT)
+            {
+                state->fall_latched = 1U;
+                state->confirm_count = 0U;
+            }
+        }
+        else
+        {
+            state->confirm_count = 0U;
         }
     }
     else
     {
-        confirm_count = 0U;
+        state->confirm_count = 0U;
+        if (upright_cos >= BMI088_FALL_EXIT_UPRIGHT_COS)
+        {
+            if (state->recover_count < BMI088_FALL_RECOVER_COUNT)
+            {
+                state->recover_count++;
+            }
+            if (state->recover_count >= BMI088_FALL_RECOVER_COUNT)
+            {
+                state->fall_latched = 0U;
+                state->recover_count = 0U;
+            }
+        }
+        else
+        {
+            state->recover_count = 0U;
+        }
     }
 
-    return (confirm_count >= BMI088_FALL_CONFIRM_COUNT) ? 1U : 0U;
+    return state->fall_latched;
+}
+
+uint8_t bmi088_detect_fall(const bmi088_accel_data_t *accel)
+{
+    static bmi088_fall_state_t state;
+
+    return bmi088_fall_update(&state, accel);
+}
+
+static void bmi088_fall_self_check(void)
+{
+    bmi088_fall_state_t state = {0};
+    const bmi088_accel_data_t upright = {0.0f, -1.0f, 0.0f};
+    const bmi088_accel_data_t horizontal = {0.0f, 0.0f, 1.0f};
+    const bmi088_accel_data_t impact = {0.0f, -2.5f, 0.0f};
+
+    for (uint16_t index = 0U; index < 180U; ++index)
+    {
+        assert(bmi088_fall_update(&state, &upright) == 0U);
+    }
+    for (uint16_t index = 0U; index < 220U; ++index)
+    {
+        assert(bmi088_fall_update(&state, &horizontal) == 0U);
+    }
+
+    memset(&state, 0, sizeof(state));
+    (void)bmi088_fall_update(&state, &upright);
+    (void)bmi088_fall_update(&state, &impact);
+    for (uint16_t index = 0U; index < 160U; ++index)
+    {
+        (void)bmi088_fall_update(&state, &horizontal);
+    }
+    assert(state.fall_latched != 0U);
 }
 
 static void bmi088_thread_entry(void *parameter)
@@ -573,6 +693,8 @@ static void bmi088_thread_entry(void *parameter)
     float yaw_deg;
     float temperature_c = 0.0f;
     uint8_t fall;
+    uint8_t last_fall_can_value = 0U;
+    uint32_t last_fall_can_tick = 0U;
     char line[180];
 
     (void)parameter;
@@ -585,7 +707,15 @@ static void bmi088_thread_entry(void *parameter)
             flex_x_deg = bmi088_calc_flex_x_deg(&accel);
             calc_euler_deg(&accel, &gyro, &roll_deg, &pitch_deg, &yaw_deg);
             (void)bmi088_read_temperature(&temperature_c);
-            fall = bmi088_detect_fall(&accel, flex_x_deg);
+            fall = bmi088_detect_fall(&accel);
+            if ((fall != last_fall_can_value) ||
+                ((rt_tick_get() - last_fall_can_tick) >=
+                 rt_tick_from_millisecond(BMI088_FALL_CAN_INTERVAL_MS)))
+            {
+                sensor_can_publish_fall(fall);
+                last_fall_can_value = fall;
+                last_fall_can_tick = rt_tick_get();
+            }
             __disable_irq();
             latest_gyro_x_dps = gyro.x_dps;
             latest_gyro_y_dps = gyro.y_dps;
@@ -648,6 +778,7 @@ int bmi088_start(void)
     char line[64];
     int status;
 
+    bmi088_fall_self_check();
     HAL_Delay(100U);
     status = bmi088_init();
     if (status != 0)

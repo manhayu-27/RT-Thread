@@ -4,6 +4,8 @@
 #define MOTOR_CAN_MAX_NODE_ID 6U
 #define NODE124_EMG_CAN_ID_PRIMARY 125U
 #define NODE124_EMG_CAN_ID_ALT     124U
+#define NODE127_FALL_CAN_ID        228U
+#define NODE127_FALL_FLAG          0x0002U
 
 volatile uint8_t motor_fb_valid[MOTOR_CAN_MAX_NODE_ID] = {0};
 volatile uint32_t motor_fb_tick[MOTOR_CAN_MAX_NODE_ID] = {0};
@@ -20,6 +22,7 @@ Node127Data_t g_node127 = {0};
 volatile uint32_t g_can2_rx_count = 0U;
 volatile uint32_t g_can2_127_rx_count = 0U;
 volatile uint32_t g_can2_227_rx_count = 0U;
+volatile uint32_t g_can2_228_rx_count = 0U;
 volatile uint32_t g_can2_last_id = 0U;
 volatile uint32_t g_can2_error_code = 0U;
 volatile uint32_t g_can2_busoff_count = 0U;
@@ -104,6 +107,24 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
     now = HAL_GetTick();
     g_node127_rx_bus = bus;
 
+    if ((std_id == NODE127_FALL_CAN_ID) && (dlc >= 8U) &&
+        (buf[0] == 0x46U) && (buf[1] == 0x41U) &&
+        (buf[2] == 0x4CU) && (buf[3] == 0x4CU) &&
+        (((buf[4] != 0U) && (buf[7] == 0xA5U)) ||
+         ((buf[4] == 0U) && (buf[7] == 0x5AU)))) {
+        if (buf[4] != 0U) {
+            g_node127.motion_flags |= NODE127_FALL_FLAG;
+        } else {
+            g_node127.motion_flags &= (uint16_t)~NODE127_FALL_FLAG;
+        }
+        g_node127.gyro_valid = 1U;
+        g_node127.updated = 1U;
+        g_node127.gyro_tick = now;
+        g_node127.last_tick = now;
+        g_can2_228_rx_count++;
+        return;
+    }
+
     /* New ID124/F042 EMG module protocol:
      * host sends sync frame 0x010, module replies with StdId 125 in the supplied
      * firmware (accept 124 too, matching the board name). Byte0~1 is big-endian
@@ -149,20 +170,11 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
     }
     else if (std_id == 227U) {
         sequence = read_u16_be(&buf[0]);
-        g_node127.last_tick = now;
-        g_can2_227_rx_count++;
-        if ((pending_emg_valid == 0U) || (sequence != pending_sequence)) {
-            pending_emg_valid = 0U;
-            return;
-        }
-
+        /* Motion and fall are safety-critical and must not depend on the EMG
+         * frame arriving first. Always accept a valid ID227 frame immediately;
+         * only the three EMG values remain sequence-paired with ID127 below.
+         */
         g_node127.sample_sequence = sequence;
-        g_node127.emg_front_uv = pending_emg_front_uv;
-        g_node127.emg_lateral_uv = pending_emg_lateral_uv;
-        g_node127.emg_rear_uv = pending_emg_rear_uv;
-        g_node127.emg = max_u16_3(pending_emg_front_uv,
-                                 pending_emg_lateral_uv,
-                                 pending_emg_rear_uv);
         g_node127.pitch_q6 = read_i16_be(&buf[2]);
         g_node127.gx = read_i16_be(&buf[4]);
         g_node127.gy = 0;
@@ -176,6 +188,18 @@ static void HandleNode127Frame(uint8_t bus, uint32_t std_id, const uint8_t *buf,
         g_node127.updated = 1U;
         g_node127.gyro_tick = now;
         g_node127.last_tick = now;
+        g_can2_227_rx_count++;
+        if ((pending_emg_valid == 0U) || (sequence != pending_sequence)) {
+            pending_emg_valid = 0U;
+            return;
+        }
+
+        g_node127.emg_front_uv = pending_emg_front_uv;
+        g_node127.emg_lateral_uv = pending_emg_lateral_uv;
+        g_node127.emg_rear_uv = pending_emg_rear_uv;
+        g_node127.emg = max_u16_3(pending_emg_front_uv,
+                                 pending_emg_lateral_uv,
+                                 pending_emg_rear_uv);
         pending_emg_valid = 0U;
     }
 }

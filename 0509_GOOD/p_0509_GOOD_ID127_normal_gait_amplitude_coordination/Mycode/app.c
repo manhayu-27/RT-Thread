@@ -56,6 +56,8 @@
 #define NODE127_GAIT_SCALE         1.0f
 #define NODE127_PITCH_Q            64.0f
 #define NODE127_IMU_MOVING_FLAG    0x0001U
+#define NODE127_IMU_FALL_FLAG      0x0002U
+#define NODE127_FALL_CLEAR_COUNT   100U
 #define NODE127_CALIB_MS           1000U     /* Rest calibration; all motors hold during this time. */
 #define NODE127_INTENT_ATTACK_ALPHA 0.80f
 #define NODE127_INTENT_RELEASE_ALPHA 0.28f
@@ -231,6 +233,8 @@ static volatile float g_ankle_cmd_turn = 0.0f;
 static volatile uint8_t g_ankle_gait_enable = 0U;
 static float g_ankle_cmd_turn_state = 0.0f;
 static uint8_t g_ankle_cmd_turn_state_valid = 0U;
+static float g_ankle_initial_turn = 0.0f;
+static uint8_t g_ankle_initial_turn_valid = 0U;
 
 /* 上电阶段码，用于判断程序停在哪一步。 */
 volatile uint32_t g_boot_stage_code = 0U;
@@ -273,7 +277,8 @@ typedef enum {
     NODE127_STATE_MOVE = 3,
     NODE127_STATE_HOLD = 4,
     NODE127_STATE_LOST = 5,
-    NODE127_STATE_INTENT_PENDING = 6
+    NODE127_STATE_INTENT_PENDING = 6,
+    NODE127_STATE_FALL = 7
 } Node127ControlState_t;
 
 static volatile uint8_t g_node127_ctrl_state = NODE127_STATE_BOOT;
@@ -283,6 +288,7 @@ static uint32_t g_node127_calib_count = 0U;
 static uint32_t g_node127_calib_last_sample_tick = 0U;
 static int32_t g_node127_gx_bias_sum = 0;
 static float g_node127_gx_bias = 0.0f;
+static uint8_t g_node127_fall_active = 0U;
 
 
 #define BMI088_SPI_TIMEOUT_MS      10U
@@ -324,6 +330,7 @@ static uint8_t Ankle_WaitForFeedback(uint8_t node_id, uint32_t timeout_ms);
 static uint8_t Ankle_InitCANPositionMode(uint8_t node_id);
 static uint8_t Ankle_HasFault(uint8_t node_id);
 static void Ankle_HoldCurrent(uint8_t node_id);
+static void Ankle_ReturnInitial(uint8_t node_id);
 
 /* --- 踝关节步态插值 --- */
 static float ankle_wave_raw_from_percent(float gait_percent) {
@@ -893,6 +900,16 @@ static void Joint_PrepareHoldLast(JointController_t *j)
     /* 已经运行过时不重新计算目标，保持上一帧 cmd.Pos。 */
 }
 
+static void Joint_PrepareReturnInitial(JointController_t *j)
+{
+    if (j == NULL) return;
+    if (j->is_calibrated == 0U) {
+        j->cmd.mode = 0U;
+        return;
+    }
+    Joint_PrepareFollowRelative(j, 0.0f);
+}
+
 static void Joint_HandleResponse(JointController_t *j, HAL_StatusTypeDef status)
 {
     if (j == NULL) return;
@@ -1005,6 +1022,35 @@ static uint8_t Node127_DataFresh(uint32_t now)
         return 0U;
     }
     return ((now - g_node127.gyro_tick) <= NODE127_DATA_TIMEOUT_MS) ? 1U : 0U;
+}
+
+static uint8_t Node127_FallActive(uint32_t now)
+{
+    static uint8_t fall_latched;
+    static uint8_t clear_count;
+    static uint8_t sample_ready;
+    static uint32_t last_motion_tick;
+    uint8_t data_fresh = Node127_DataFresh(now);
+
+    if (data_fresh != 0U) {
+        if ((g_node127.motion_flags & NODE127_IMU_FALL_FLAG) != 0U) {
+            fall_latched = 1U;
+            clear_count = 0U;
+        } else if ((fall_latched != 0U) &&
+                   ((sample_ready == 0U) ||
+                    (g_node127.gyro_tick != last_motion_tick))) {
+            if (clear_count < NODE127_FALL_CLEAR_COUNT) clear_count++;
+            if (clear_count >= NODE127_FALL_CLEAR_COUNT) {
+                fall_latched = 0U;
+                clear_count = 0U;
+            }
+        }
+
+        last_motion_tick = g_node127.gyro_tick;
+        sample_ready = 1U;
+    }
+
+    return fall_latched;
 }
 
 static int16_t Node127_GetAbsPitchRateRaw(void)
@@ -1406,6 +1452,53 @@ static void Ankle_HoldCurrent(uint8_t node_id)
 }
 
 
+static void Ankle_ReturnInitial(uint8_t node_id)
+{
+    static uint32_t last_enable_tick[6] = {0U};
+    uint32_t now;
+    float max_step_turn;
+    float target_turn;
+
+    if (node_id >= 6U) return;
+    now = HAL_GetTick();
+    target_turn = (g_ankle_initial_turn_valid != 0U) ?
+                  g_ankle_initial_turn : motor[node_id].init_pos;
+    max_step_turn = ANKLE_MAX_CMD_SPEED_DEG_S * ANKLE_TURN_PER_DEG *
+                    ((float)CONTROL_PERIOD_MS / 1000.0f);
+
+    if (g_ankle_cmd_turn_state_valid == 0U) {
+        g_ankle_cmd_turn_state = (motor_fb_valid[node_id] != 0U) ?
+                                 motor[node_id].pos : target_turn;
+        g_ankle_cmd_turn_state_valid = 1U;
+    }
+    if (target_turn > (g_ankle_cmd_turn_state + max_step_turn)) {
+        g_ankle_cmd_turn_state += max_step_turn;
+    } else if (target_turn < (g_ankle_cmd_turn_state - max_step_turn)) {
+        g_ankle_cmd_turn_state -= max_step_turn;
+    } else {
+        g_ankle_cmd_turn_state = target_turn;
+    }
+
+    g_ankle_cmd_deg = 0.0f;
+    g_ankle_cmd_turn = g_ankle_cmd_turn_state;
+    g_ankle_gait_enable = 0U;
+
+    if ((now - last_enable_tick[node_id]) >= ANKLE_ENABLE_RETRY_MS) {
+        last_enable_tick[node_id] = now;
+        g_ankle_last_tx_status = can_set_controller_mode(node_id,
+                                                         ANKLE_CAN_CONTROL_MODE,
+                                                         ANKLE_CAN_INPUT_MODE);
+        HAL_Delay(1);
+        g_ankle_last_tx_status = can_set_input_pos(node_id,
+                                                   g_ankle_cmd_turn_state,
+                                                   0,
+                                                   0);
+        HAL_Delay(1);
+        g_ankle_last_tx_status = can_set_axis_state(node_id, 8U);
+    }
+    (void)can_set_input_pos(node_id, g_ankle_cmd_turn_state, 0, 0);
+}
+
 static void Ankle_IdleBeforeFirstEmg(uint8_t node_id)
 {
     static uint32_t last_idle_tick[6] = {0U};
@@ -1518,6 +1611,8 @@ static uint8_t Ankle_InitCANPositionMode(uint8_t node_id)
      */
     motor[node_id].init_pos = motor[node_id].pos;
 #endif
+    g_ankle_initial_turn = motor[node_id].init_pos;
+    g_ankle_initial_turn_valid = 1U;
     g_ankle_cmd_turn = motor[node_id].init_pos;
     g_ankle_cmd_turn_state = motor[node_id].init_pos;
     g_ankle_cmd_turn_state_valid = 1U;
@@ -1731,7 +1826,40 @@ void App_RunOnce(void) {
                 Ankle_IdleBeforeFirstEmg(ANKLE_MOTOR_ID);
             }
         } else {
-            uint8_t node127_motion = Node127_UpdateMotionControl(now);
+            uint8_t fall_active = Node127_FallActive(now);
+
+            if (fall_active != 0U) {
+                if (g_node127_fall_active == 0U) {
+                    g_node127_fall_active = 1U;
+                    Node127_ClearIntent();
+                }
+                g_node127_motion_active = 0U;
+                g_node127_motion_level = 0.0f;
+                g_node127_intent_level = 0.0f;
+                g_gait_amp_state = 0.0f;
+                g_node127_ctrl_state = NODE127_STATE_FALL;
+
+                Joint_PrepareReturnInitial(&knee);
+                Joint_HandleResponse(&knee, SERVO_Send_recv(&knee.cmd, &knee.data));
+                Joint_PrepareReturnInitial(&hip);
+                Joint_HandleResponse(&hip, SERVO_Send_recv(&hip.cmd, &hip.data));
+
+                if (ankle_can_ready != 0U) {
+                    if (Ankle_HasFault(ANKLE_MOTOR_ID) != 0U) {
+                        (void)can_set_axis_state(ANKLE_MOTOR_ID, 1U);
+                        ankle_can_ready = 0U;
+                    } else {
+                        Ankle_ReturnInitial(ANKLE_MOTOR_ID);
+                    }
+                }
+            } else {
+                uint8_t node127_motion;
+
+                if (g_node127_fall_active != 0U) {
+                    g_node127_fall_active = 0U;
+                    Node127_ResetCalibration(now);
+                }
+                node127_motion = Node127_UpdateMotionControl(now);
 
             if (node127_motion != 0U) {
                 float dt_s = (float)CONTROL_PERIOD_MS * 0.001f;
@@ -1824,6 +1952,7 @@ void App_RunOnce(void) {
                     /* 无运动时保持上一目标，不回初始位置，也不继续运行曲线。 */
                     Ankle_HoldLastTarget(ANKLE_MOTOR_ID);
                 }
+            }
             }
         }
 

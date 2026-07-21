@@ -12,7 +12,7 @@ void ASR_CODE();
 void asrpro_uart_task();
 
 //{speak:小爱-活泼女声,vol:10,speed:11,platform:haohaodada,version:V3}
-//{playid:10001,voice:欢迎使用智能假肢助手，用小朱唤醒我。}
+//{playid:10001,voice:欢迎使用智能假肢助手，用小朱同学唤醒我。}
 //{playid:10002,voice:}
 //{playid:10003,voice:当前设备温度为}
 //{playid:10004,voice:摄氏度}
@@ -190,7 +190,7 @@ void setup()
   //欢迎词指开机提示音，可以为空
   //退出语音是指休眠时提示音，可以为空
   //休眠后用唤醒词唤醒后才能执行命令，唤醒词最多5个。回复语可以空。ID范围为0-9999
-  //{ID:0,keyword:"唤醒词",ASR:"天问五幺",ASRTO:"我在"}
+  //{ID:0,keyword:"唤醒词",ASR:"小朱同学",ASRTO:"我在"}
   //{ID:1,keyword:"命令词",ASR:"打开灯光",ASRTO:"好的，马上打开灯光"}
   //{ID:2,keyword:"命令词",ASR:"关闭灯光",ASRTO:"好的，马上关闭灯光"}
   //{ID:3,keyword:"命令词",ASR:"灯光打开",ASRTO:"好的，马上打开灯光"}
@@ -202,6 +202,8 @@ void setup()
   setPinFun(4,FIRST_FUNCTION);
   pinMode(4,output);
 }
+
+
 
 
 

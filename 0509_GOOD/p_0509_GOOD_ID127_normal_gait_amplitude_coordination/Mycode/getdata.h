@@ -46,6 +46,7 @@ extern Node127Data_t g_node127;
 extern volatile uint32_t g_can2_rx_count;
 extern volatile uint32_t g_can2_127_rx_count;
 extern volatile uint32_t g_can2_227_rx_count;
+extern volatile uint32_t g_can2_228_rx_count;
 extern volatile uint32_t g_can2_last_id;
 extern volatile uint32_t g_can2_error_code;
 extern volatile uint32_t g_can2_busoff_count;

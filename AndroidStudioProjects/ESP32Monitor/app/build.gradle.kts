@@ -1,3 +1,14 @@
+import java.util.Properties
+
+val apiProperties = Properties().apply {
+    val file = rootProject.file("api.properties")
+    if (file.exists()) file.inputStream().use(::load)
+}
+
+fun apiProperty(name: String): String = apiProperties.getProperty(name, "")
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -19,6 +30,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "DEFAULT_VOLC_TTS_APP_ID", "\"${apiProperty("VOLC_TTS_APP_ID")}\"")
+        buildConfigField("String", "DEFAULT_VOLC_TTS_ACCESS_TOKEN", "\"${apiProperty("VOLC_TTS_ACCESS_TOKEN")}\"")
+        buildConfigField("String", "DEFAULT_VOLC_TTS_VOICE", "\"${apiProperty("VOLC_TTS_VOICE")}\"")
+        buildConfigField("String", "DEFAULT_VOLC_TTS_CONFIG_VERSION", "\"${apiProperty("VOLC_TTS_CONFIG_VERSION")}\"")
     }
 
     buildTypes {
@@ -34,6 +49,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     sourceSets {
         getByName("main").assets.srcDir("../../../web-monitor")

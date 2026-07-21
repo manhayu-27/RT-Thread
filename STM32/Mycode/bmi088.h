@@ -38,8 +38,7 @@ uint8_t bmi088_get_latest_motion(bmi088_gyro_data_t *gyro, uint8_t *fall);
 uint8_t bmi088_get_latest_state(bmi088_motion_data_t *motion, uint8_t *fall);
 void bmi088_set_motion_stream_to_esp32(uint8_t enabled);
 float bmi088_calc_flex_x_deg(const bmi088_accel_data_t *accel);
-uint8_t bmi088_detect_fall(const bmi088_accel_data_t *accel,
-                           float flex_x_deg);
+uint8_t bmi088_detect_fall(const bmi088_accel_data_t *accel);
 int bmi088_start(void);
 
 #ifdef __cplusplus

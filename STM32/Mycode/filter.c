@@ -16,21 +16,25 @@ static float32_t filter_state[FILTER_CHANNEL_COUNT][2U * FILTER_SECTION_COUNT];
  */
 static const float32_t ecg_filter_coeffs[5U * FILTER_SECTION_COUNT] =
 {
-    /* 5 Hz high-pass, Fs = 500 Hz, 2nd-order Butterworth. */
-    0.956543225556877f,   -1.91308645111375f,     0.956543225556877f,
-    1.91119706742607f,    -0.914975834801434f,
+    /* 0.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 1. */
+    0.991824212000533f,  -1.983648424001066f,    0.991824212000533f,
+    1.988418017374658f,  -0.988457267818733f,
 
-    /* 40 Hz low-pass, Fs = 500 Hz, 4th-order Butterworth, section 1 */
-    0.00223489169808233f,  0.00446978339616465f,  0.00223489169808233f,
-    1.21281209262022f,    -0.384004162286554f,
+    /* 0.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 2. */
+    1.0f,                -2.0f,                  1.0f,
+    1.995163241283863f,  -0.995202624875511f,
 
-    /* 40 Hz low-pass, Fs = 500 Hz, 4th-order Butterworth, section 2 */
+    /* 40 Hz low-pass, Fs = 500 Hz, 4th-order Butterworth, section 1. */
+    0.002234891698082f,   0.004469783396165f,    0.002234891698082f,
+    1.212812092620219f,  -0.384004162286554f,
+
+    /* 40 Hz low-pass, Fs = 500 Hz, 4th-order Butterworth, section 2. */
     1.0f,                  2.0f,                  1.0f,
-    1.47979889439722f,    -0.688676953053862f,
+    1.479798894397217f,  -0.688676953053862f,
 
-    /* Identity section. */
-    1.0f,                  0.0f,                  0.0f,
-    0.0f,                  0.0f
+    /* 50 Hz notch, Fs = 500 Hz, Q = 35. Suppresses mains interference. */
+    0.991103635647f,      -1.603639368850f,      0.991103635647f,
+    1.603639368850f,      -0.982207271294f
 };
 
 static const float32_t emg_filter_coeffs[5U * FILTER_SECTION_COUNT] =
@@ -46,7 +50,11 @@ static const float32_t emg_filter_coeffs[5U * FILTER_SECTION_COUNT] =
     1.51996066993859f,    -0.589701455804563f,
 
     1.0f,                 -2.0f,                  1.0f,
-    1.78799886261964f,    -0.848373825526529f
+    1.78799886261964f,    -0.848373825526529f,
+
+    /* Unused EMG fifth section: keep the established 20-150 Hz response. */
+    1.0f,                  0.0f,                  0.0f,
+    0.0f,                  0.0f
 };
 
 void filter_init(void)

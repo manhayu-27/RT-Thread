@@ -40,6 +40,7 @@
 #define SENSOR_CAN_SYNC_ID      0x010U
 #define SENSOR_CAN_EMG_ID       127U
 #define SENSOR_CAN_MOTION_ID    227U
+#define SENSOR_CAN_FALL_ID      228U
 #define SENSOR_CAN_WINDOW_SIZE  5U
 #define SENSOR_CAN_ANGLE_Q      64.0f
 #define SENSOR_CAN_MOVING_DPS   5.0f
@@ -96,6 +97,18 @@ static void sensor_can_send(uint32_t std_id, const uint8_t data[8])
     header.DLC = 8U;
     header.TransmitGlobalTime = DISABLE;
     (void)HAL_CAN_AddTxMessage(&hcan1, &header, (uint8_t *)data, &mailbox);
+}
+
+void sensor_can_publish_fall(uint8_t fall)
+{
+    static uint16_t fall_sequence;
+    uint8_t data[8] = {0x46U, 0x41U, 0x4CU, 0x4CU, 0U, 0U, 0U, 0U};
+
+    fall_sequence++;
+    data[4] = (fall != 0U) ? 1U : 0U;
+    put_u16_be(&data[5], fall_sequence);
+    data[7] = (fall != 0U) ? 0xA5U : 0x5AU;
+    sensor_can_send(SENSOR_CAN_FALL_ID, data);
 }
 
 static void sensor_can_publish(float ch2_uv,

@@ -6,7 +6,10 @@ const CHANNEL_COLORS = {
   emg3: "--violet",
 };
 const MAX_POINTS = 2500;
-const DISPLAY_POINTS = 1100;
+const DISPLAY_POINTS = 650;
+const UI_UPDATE_INTERVAL = 100;
+const MOTION_UPDATE_INTERVAL = 50;
+const DRAW_INTERVAL_MS = 50;
 const DEFAULT_SETTINGS = {
   hrLow: 50,
   hrHigh: 120,
@@ -16,6 +19,9 @@ const DEFAULT_SETTINGS = {
   emg3Limit: 0.5,
   disconnectMs: 2000,
   ecgRules: true,
+  emergencyPhone: "",
+  emergencySmsEnabled: false,
+  aiVoiceEnabled: true,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -58,6 +64,11 @@ const elements = {
   chatLog: $("#chatLog"),
   chatInput: $("#chatInput"),
   sendChat: $("#sendChat"),
+  liveRiskState: $("#liveRiskState"),
+  livePostureState: $("#livePostureState"),
+  liveAiSummary: $("#liveAiSummary"),
+  voiceOrb: $("#voiceOrb"),
+  voiceToggle: $("#voiceToggle"),
 };
 
 const state = {
@@ -91,7 +102,14 @@ const state = {
   alarmMedia: null,
   alarmAudioUnlocked: false,
   lastAlarmSoundAt: 0,
+  fallActive: false,
+  lastEmergencySmsAt: 0,
   aiHistory: [],
+  lastAiSummaryAt: 0,
+  liveAiBusy: false,
+  voiceListening: false,
+  aiRequestId: 0,
+  pendingAiRequest: null,
 };
 
 function loadSettings() {
@@ -147,6 +165,7 @@ function resetSignalData() {
   elements.sampleCounter.textContent = "0 samples";
   state.latestGyro = [0, 0, 0];
   state.latestFall = 0;
+  state.fallActive = false;
   state.latestAngles = [0, 0, 0];
   state.latestTemp = 0;
   if ($("#gyroX")) $("#gyroX").textContent = "--";
@@ -346,6 +365,33 @@ function updateAlarm(flags) {
   playAlarmSound();
 }
 
+function updateVoiceToggle() {
+  const enabled = Boolean(state.settings.aiVoiceEnabled);
+  elements.voiceToggle?.classList.toggle("enabled", enabled);
+  elements.voiceToggle?.setAttribute("aria-pressed", String(enabled));
+  if (elements.voiceToggle) elements.voiceToggle.querySelector("strong").textContent = enabled ? "开" : "关";
+}
+
+function setAiVoiceEnabled(enabled, announce = true) {
+  state.settings.aiVoiceEnabled = enabled;
+  localStorage.setItem("bioscopeSettings", JSON.stringify(state.settings));
+  updateVoiceToggle();
+  if (!enabled) window.AndroidHost?.stopSpeaking?.();
+  if (announce) showToast(enabled ? "AI 语音朗读已开启" : "AI 语音朗读已关闭");
+}
+
+function sendFallSms() {
+  if (!state.settings.emergencySmsEnabled || !state.settings.emergencyPhone) return;
+  if (Date.now() - state.lastEmergencySmsAt < 60000) return;
+  if (!window.AndroidHost?.sendEmergencySms) {
+    showToast("紧急短信仅能在安卓 App 中发送");
+    return;
+  }
+  state.lastEmergencySmsAt = Date.now();
+  window.AndroidHost.sendEmergencySms(state.settings.emergencyPhone);
+  showToast("已请求发送跌倒提醒短信");
+}
+
 function addSample(values, sequence, timestampUs = Date.now() * 1000) {
   const sample = [
     Number(values[0]),
@@ -397,12 +443,18 @@ function addSample(values, sequence, timestampUs = Date.now() * 1000) {
 
   if (state.task) {
     state.pendingRows.push([Math.round(timestampUs), ...sample, state.currentFlags]);
-    if (state.pendingRows.length >= 100) flushSamples();
+    if (state.pendingRows.length >= 500) flushSamples();
   }
 
-  updateMotionMetrics(sample);
-  if (sample[7]) updateAlarm(state.currentFlags);
-  if (state.sampleCount % 50 === 0) {
+  if (sample[7] || state.sampleCount % MOTION_UPDATE_INTERVAL === 0) updateMotionMetrics(sample);
+  if (sample[7]) {
+    updateAlarm(state.currentFlags);
+    if (!state.fallActive) sendFallSms();
+    state.fallActive = true;
+  } else {
+    state.fallActive = false;
+  }
+  if (state.sampleCount % UI_UPDATE_INTERVAL === 0) {
     updateMetrics(sample);
     updateAlarm(state.currentFlags);
   }
@@ -447,7 +499,75 @@ function updateMetrics(values) {
   elements.signalQuality.textContent = Math.max(0, Math.round(100 - loss * 2));
   elements.qualityState.textContent = loss < 1 ? "良好" : loss < 5 ? "一般" : "较差";
   elements.sampleCounter.textContent = `${state.sampleCount.toLocaleString()} samples`;
+  updateLiveContext(heart, rmsValues, loss);
 }
+
+function buildRealtimeContext() {
+  const heart = estimateHeart();
+  const emg = ["emg1", "emg2", "emg3"].map((channel) => Number(calculateRms(channel).toFixed(4)));
+  const gyroMagnitude = Math.hypot(...state.latestGyro);
+  const postureDeviation = Math.max(Math.abs(state.latestAngles[0]), Math.abs(state.latestAngles[1]));
+  const expected = state.sampleCount + state.droppedPackets;
+  const lossPercent = expected ? Number((state.droppedPackets / expected * 100).toFixed(2)) : 0;
+  return {
+    source: "本地实时窗口约0.5秒，非连续原始波形",
+    sampleCount: state.sampleCount,
+    heartRateBpm: heart ? Math.round(heart.rate) : null,
+    heartRhythmFlags: heart ? { irregular: heart.irregular, missedBeat: heart.missedBeat } : null,
+    emgRmsMv: emg,
+    emgActivity: Math.max(...emg) > 0.5 ? "较高" : Math.max(...emg) > 0.15 ? "中等" : "较低",
+    postureDeg: { roll: Number(state.latestAngles[0].toFixed(1)), pitch: Number(state.latestAngles[1].toFixed(1)), yaw: Number(state.latestAngles[2].toFixed(1)) },
+    gyroDps: Number(gyroMagnitude.toFixed(1)),
+    postureDeviationDeg: Number(postureDeviation.toFixed(1)),
+    fallDetected: Boolean(state.latestFall),
+    alarmFlags: state.currentFlags,
+    packetLossPercent: lossPercent,
+    limitations: "仅供工程调试与教学研究；本地规则负责安全，不用于医学诊断或控制关节。",
+  };
+}
+
+function updateLiveContext(heart, rmsValues, loss) {
+  const context = buildRealtimeContext();
+  const movement = context.gyroDps >= 80 ? "运动较明显" : context.gyroDps >= 30 ? "轻度运动" : "姿态相对平稳";
+  const risk = context.fallDetected ? "跌倒报警已触发" : state.currentFlags ? "存在需要关注的阈值报警" : "未见本地风险报警";
+  if (elements.liveRiskState) elements.liveRiskState.textContent = risk;
+  if (elements.livePostureState) elements.livePostureState.textContent = `${movement} · 偏移 ${context.postureDeviationDeg}°`;
+  if (elements.liveAiSummary && !state.liveAiBusy) {
+    elements.liveAiSummary.textContent = `肌电${context.emgActivity} · ${movement} · ${risk}`;
+  }
+  if (state.sampleCount >= state.sampleRate * 4 && Date.now() - state.lastAiSummaryAt > 60000) {
+    requestLiveAiSummary(context);
+  }
+}
+
+async function requestLiveAiSummary(context = buildRealtimeContext()) {
+  if (state.liveAiBusy || Date.now() - state.lastAiSummaryAt < 45000) return;
+  state.liveAiBusy = true;
+  state.lastAiSummaryAt = Date.now();
+  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "AI 正在解读实时摘要…";
+  if (window.AndroidHost?.requestRealtimeAi) {
+    window.AndroidHost.requestRealtimeAi(JSON.stringify(context));
+    return;
+  }
+  try {
+    const { summary } = await api("/api/ai/realtime", { method: "POST", body: JSON.stringify({ context }) });
+    if (elements.liveAiSummary) elements.liveAiSummary.textContent = summary;
+  } catch {
+    if (elements.liveAiSummary) elements.liveAiSummary.textContent = "本地摘要已就绪；配置 API 后可获得语义解读";
+  } finally {
+    state.liveAiBusy = false;
+  }
+}
+
+window.onRealtimeAiSummary = (summary) => {
+  state.liveAiBusy = false;
+  if (elements.liveAiSummary) elements.liveAiSummary.textContent = summary;
+};
+
+window.onRealtimeAiError = () => {
+  state.liveAiBusy = false;
+  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "本地摘要已就绪；配置 API 后可获得语义解读";
+};
 
 function parsePayload(payload) {
   if (payload instanceof Blob) {
@@ -759,10 +879,33 @@ async function loadAiTasks() {
   }
 }
 
-function setAiBusy(busy) {
+function setAiBusy(busy, label = "") {
   elements.generateReport.disabled = busy;
   elements.sendChat.disabled = busy;
   elements.aiTask.disabled = busy;
+  if (busy) {
+    elements.aiStatus.textContent = label || "AI 正在生成，请稍候…";
+    elements.aiStatus.classList.add("working");
+  } else {
+    elements.aiStatus.classList.remove("working");
+    checkAiStatus();
+  }
+}
+
+function beginAiRequest(type, extra = {}) {
+  const id = ++state.aiRequestId;
+  state.pendingAiRequest = { id, type, ...extra };
+  setAiBusy(true, type === "report" ? "AI 正在整理完整报告…" : "AI 正在思考并生成回答…");
+  return id;
+}
+
+function endAiRequest(id) {
+  if (!state.pendingAiRequest || state.pendingAiRequest.id !== id) return null;
+  const request = state.pendingAiRequest;
+  state.pendingAiRequest = null;
+  setAiBusy(false);
+  elements.chatInput.focus();
+  return request;
 }
 
 async function generateAiReport() {
@@ -771,8 +914,12 @@ async function generateAiReport() {
     showToast("请先选择一个有信号数据的采集任务");
     return;
   }
-  setAiBusy(true);
+  const requestId = beginAiRequest("report");
   elements.aiReport.textContent = "正在读取完整 CSV 并生成报告…";
+  if (window.AndroidHost?.requestAiReport) {
+    window.AndroidHost.requestAiReport(JSON.stringify({ requestId, taskId }));
+    return;
+  }
   try {
     const { report } = await api("/api/ai/report", {
       method: "POST",
@@ -782,7 +929,7 @@ async function generateAiReport() {
   } catch (error) {
     elements.aiReport.textContent = `报告生成失败：${error.message}`;
   } finally {
-    setAiBusy(false);
+    endAiRequest(requestId);
   }
 }
 
@@ -792,32 +939,106 @@ function appendChat(role, content) {
   message.textContent = content;
   elements.chatLog.appendChild(message);
   elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
+  return message;
 }
 
 async function sendAiMessage(event) {
   event.preventDefault();
   const message = elements.chatInput.value.trim();
   if (!message) return;
+  elements.chatInput.value = "";
+  await askAi(message);
+}
+
+async function askAi(message, speakAnswer = false) {
   const history = state.aiHistory.slice();
   appendChat("user", message);
   state.aiHistory.push({ role: "user", content: message });
-  elements.chatInput.value = "";
-  setAiBusy(true);
+  const pendingMessage = appendChat("assistant pending", "AI 正在生成回答，请稍候…");
+  const requestId = beginAiRequest("chat", { pendingMessage, speakAnswer });
+  const payload = { requestId, message, history, taskId: elements.aiTask.value, realtimeContext: buildRealtimeContext() };
+  if (window.AndroidHost?.requestAiChat) {
+    window.AndroidHost.requestAiChat(JSON.stringify(payload));
+    return;
+  }
   try {
     const { answer } = await api("/api/ai/chat", {
       method: "POST",
-      body: JSON.stringify({ message, history, taskId: elements.aiTask.value }),
+      body: JSON.stringify(payload),
     });
-    state.aiHistory.push({ role: "assistant", content: answer });
-    state.aiHistory = state.aiHistory.slice(-10);
-    appendChat("assistant", answer);
+    completeAiChat(requestId, answer);
   } catch (error) {
-    appendChat("assistant", `暂时无法回答：${error.message}`);
+    failAiChat(requestId, error.message);
   } finally {
-    setAiBusy(false);
-    elements.chatInput.focus();
+    endAiRequest(requestId);
   }
 }
+
+function completeAiChat(requestId, answer) {
+  const request = state.pendingAiRequest;
+  if (!request || request.id !== requestId || request.type !== "chat") return;
+  request.pendingMessage.classList.remove("pending");
+  request.pendingMessage.textContent = answer;
+  state.aiHistory.push({ role: "assistant", content: answer });
+  state.aiHistory = state.aiHistory.slice(-10);
+  elements.chatLog.scrollTop = elements.chatLog.scrollHeight;
+  if (request.speakAnswer && state.settings.aiVoiceEnabled) window.AndroidHost?.speak?.(answer);
+}
+
+function failAiChat(requestId, message) {
+  const request = state.pendingAiRequest;
+  if (!request || request.id !== requestId || request.type !== "chat") return;
+  request.pendingMessage.classList.remove("pending");
+  request.pendingMessage.textContent = `暂时无法回答：${message}`;
+}
+
+window.onAiChatResult = (requestId, answer) => {
+  completeAiChat(Number(requestId), String(answer || ""));
+  endAiRequest(Number(requestId));
+};
+
+window.onAiChatError = (requestId, message) => {
+  failAiChat(Number(requestId), String(message || "AI 对话失败"));
+  endAiRequest(Number(requestId));
+};
+
+window.onAiReportResult = (requestId, report) => {
+  const request = state.pendingAiRequest;
+  if (!request || request.id !== Number(requestId) || request.type !== "report") return;
+  elements.aiReport.textContent = String(report || "报告内容为空");
+  endAiRequest(Number(requestId));
+};
+
+window.onAiReportError = (requestId, message) => {
+  const request = state.pendingAiRequest;
+  if (!request || request.id !== Number(requestId) || request.type !== "report") return;
+  elements.aiReport.textContent = `报告生成失败：${message}`;
+  endAiRequest(Number(requestId));
+};
+
+window.onVoiceQuestion = (message) => {
+  const text = String(message || "").trim();
+  if (!text) return;
+  showToast(`识别到：${text}`);
+  askAi(text, true);
+};
+
+window.onVoiceError = (message) => {
+  showToast(String(message || "语音识别失败"));
+};
+
+window.onVoiceCancelled = () => {
+  state.voiceListening = false;
+  elements.voiceOrb?.classList.remove("listening");
+  if (elements.voiceOrb) elements.voiceOrb.querySelector("strong").textContent = "已取消";
+  setTimeout(() => { if (elements.voiceOrb && !state.voiceListening) elements.voiceOrb.querySelector("strong").textContent = "长按问 AI"; }, 900);
+};
+
+window.onAiSpeechState = (status, detail = "") => {
+  if (status === "speaking") showToast("AI 正在语音朗读，关闭开关可停止");
+  if (status === "error") showToast("系统语音朗读不可用");
+  if (status === "fallback") showToast(`豆包语音不可用，已回退系统朗读${detail ? `：${detail}` : ""}`);
+};
 
 function clearAiChat() {
   state.aiHistory = [];
@@ -829,7 +1050,7 @@ async function checkAiStatus() {
   try {
     const status = await api("/api/ai/status");
     elements.aiStatus.textContent = status.configured
-      ? `API 密钥已配置 · ${status.model}`
+      ? `API 已配置 · ${status.volcTtsConfigured ? "豆包语音已启用" : "系统朗读"}`
       : window.AndroidHost ? "点击此处配置 ARK_API_KEY" : "未配置 ARK_API_KEY";
     elements.aiStatus.classList.toggle("ready", status.configured);
   } catch {
@@ -870,7 +1091,7 @@ async function openReplay(task) {
 
 function fitCanvas(canvas) {
   const rect = canvas.getBoundingClientRect();
-  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
   const width = Math.max(1, Math.round(rect.width * ratio));
   const height = Math.max(1, Math.round(rect.height * ratio));
   if (canvas.width !== width || canvas.height !== height) {
@@ -914,6 +1135,7 @@ function drawLine(canvas, values, color, scale, markers = []) {
 }
 
 function drawLive() {
+  if (!$("#monitorView").classList.contains("active")) return;
   CHANNELS.forEach((channel) => {
     const values = getRecent(channel, DISPLAY_POINTS);
     const firstSample = state.sampleCount - values.length + 1;
@@ -963,8 +1185,12 @@ function updateClock() {
   elements.captureDuration.textContent = state.taskStartedAt ? formatDuration((Date.now() - state.taskStartedAt) / 1000) : "00:00:00";
 }
 
-function render() {
-  drawLive();
+let lastDrawAt = 0;
+function render(now) {
+  if (now - lastDrawAt >= DRAW_INTERVAL_MS) {
+    drawLive();
+    lastDrawAt = now;
+  }
   requestAnimationFrame(render);
 }
 
@@ -981,14 +1207,19 @@ function saveSettings(event) {
   const next = { ...state.settings };
   Object.keys(DEFAULT_SETTINGS).forEach((key) => {
     const input = $(`#${key}`);
-    next[key] = input.type === "checkbox" ? input.checked : Number(input.value);
+    next[key] = input.type === "checkbox" ? input.checked
+      : key === "emergencyPhone" ? input.value.trim() : Number(input.value);
   });
   if (next.hrLow >= next.hrHigh) {
     showToast("心率下限必须小于上限");
     return;
   }
+  if (next.emergencySmsEnabled && !/^\+?[0-9 -]{6,20}$/.test(next.emergencyPhone)) {
+    showToast("请输入有效的紧急联系人手机号");
+    return;
+  }
   state.settings = next;
-  localStorage.setItem("bioscopeSettings", JSON.stringify(next));
+  setAiVoiceEnabled(next.aiVoiceEnabled, false);
   $("#heartRange").textContent = `${next.hrLow}–${next.hrHigh} BPM`;
   $("#emgThresholdText").textContent = `${Math.max(next.emg1Limit, next.emg2Limit, next.emg3Limit).toFixed(2)} mV`;
   $("#settingsDialog").close();
@@ -1027,6 +1258,7 @@ elements.alarmBanner.addEventListener("click", (event) => {
   if (event.target.id !== "dismissAlarm") playAlarmSound();
 });
 $("#themeButton").addEventListener("click", () => document.body.classList.toggle("dark"));
+elements.voiceToggle?.addEventListener("click", () => setAiVoiceEnabled(!state.settings.aiVoiceEnabled));
 $("#settingsButton").addEventListener("click", openSettings);
 $("#saveSettings").addEventListener("click", saveSettings);
 $("#refreshTasks").addEventListener("click", loadTasks);
@@ -1034,6 +1266,96 @@ elements.replayRange.addEventListener("input", drawReplay);
 elements.generateReport.addEventListener("click", generateAiReport);
 $("#chatForm").addEventListener("submit", sendAiMessage);
 $("#clearChat").addEventListener("click", clearAiChat);
+
+let voicePressTimer = null;
+let voiceDrag = null;
+
+function restoreVoiceOrbPosition() {
+  const saved = JSON.parse(localStorage.getItem("bioscopeVoiceOrb") || "null");
+  if (!saved || !elements.voiceOrb) return;
+  elements.voiceOrb.style.left = `${saved.left}px`;
+  elements.voiceOrb.style.top = `${saved.top}px`;
+  elements.voiceOrb.style.right = "auto";
+  elements.voiceOrb.style.bottom = "auto";
+}
+
+function moveVoiceOrb(clientX, clientY) {
+  if (!voiceDrag || !elements.voiceOrb) return;
+  const size = elements.voiceOrb.offsetWidth;
+  const left = Math.max(8, Math.min(window.innerWidth - size - 8, voiceDrag.left + clientX - voiceDrag.x));
+  const top = Math.max(8, Math.min(window.innerHeight - size - 28, voiceDrag.top + clientY - voiceDrag.y));
+  elements.voiceOrb.style.left = `${left}px`;
+  elements.voiceOrb.style.top = `${top}px`;
+  elements.voiceOrb.style.right = "auto";
+  elements.voiceOrb.style.bottom = "auto";
+}
+
+elements.voiceOrb?.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  const rect = elements.voiceOrb.getBoundingClientRect();
+  voiceDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
+  elements.voiceOrb.setPointerCapture?.(event.pointerId);
+  voicePressTimer = setTimeout(() => {
+    if (voiceDrag?.moved || !window.AndroidHost?.startVoiceQuestion) {
+      if (!voiceDrag?.moved) showToast("语音问答仅在 Android App 中可用");
+      return;
+    }
+    state.voiceListening = true;
+    elements.voiceOrb.classList.add("listening");
+    elements.voiceOrb.querySelector("strong").textContent = "松开后提问";
+    window.AndroidHost.startVoiceQuestion();
+    elements.voiceOrb.querySelector("strong").textContent = "松开提交 · 滑动取消";
+  }, 350);
+});
+
+elements.voiceOrb?.addEventListener("pointermove", (event) => {
+  if (!voiceDrag || event.pointerId !== voiceDrag.pointerId) return;
+  const distance = Math.hypot(event.clientX - voiceDrag.x, event.clientY - voiceDrag.y);
+  if (state.voiceListening && distance > 28) {
+    voiceDrag.cancelled = true;
+    state.voiceListening = false;
+    elements.voiceOrb.classList.remove("listening");
+    elements.voiceOrb.querySelector("strong").textContent = "已取消";
+    window.AndroidHost?.cancelVoiceQuestion?.();
+    return;
+  }
+  if (distance > 12) {
+    voiceDrag.moved = true;
+    clearTimeout(voicePressTimer);
+    if (state.voiceListening) window.AndroidHost?.cancelVoiceQuestion?.();
+    state.voiceListening = false;
+    elements.voiceOrb.classList.remove("listening");
+    elements.voiceOrb.querySelector("strong").textContent = "拖动定位";
+    moveVoiceOrb(event.clientX, event.clientY);
+  }
+});
+
+const finishVoicePointer = (event) => {
+  if (!voiceDrag || (event && event.pointerId !== voiceDrag.pointerId)) return;
+  clearTimeout(voicePressTimer);
+  const moved = voiceDrag.moved;
+  const cancelled = voiceDrag.cancelled;
+  voiceDrag = null;
+  if (cancelled && elements.voiceOrb) {
+    setTimeout(() => { if (!state.voiceListening) elements.voiceOrb.querySelector("strong").textContent = "长按问 AI"; }, 900);
+    return;
+  }
+  if (moved && elements.voiceOrb) {
+    const rect = elements.voiceOrb.getBoundingClientRect();
+    localStorage.setItem("bioscopeVoiceOrb", JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }));
+    elements.voiceOrb.querySelector("strong").textContent = "长按问 AI";
+    return;
+  }
+  if (!state.voiceListening) return;
+  state.voiceListening = false;
+  elements.voiceOrb.classList.remove("listening");
+  elements.voiceOrb.querySelector("strong").textContent = "正在识别…";
+  window.AndroidHost?.stopVoiceQuestion?.();
+  setTimeout(() => { if (!state.voiceListening) elements.voiceOrb.querySelector("strong").textContent = "长按问 AI"; }, 2000);
+};
+["pointerup", "pointercancel"].forEach((eventName) => elements.voiceOrb?.addEventListener(eventName, finishVoicePointer));
+restoreVoiceOrbPosition();
+updateVoiceToggle();
 elements.aiStatus.addEventListener("click", () => window.AndroidHost?.configureAi());
 
 $$(".nav-item[data-view]").forEach((button) => {
@@ -1056,7 +1378,7 @@ setInterval(() => {
   }
 }, 250);
 setInterval(createDemoBatch, 20);
-setInterval(flushSamples, 500);
+setInterval(flushSamples, 2000);
 setInterval(updateClock, 1000);
 window.addEventListener("beforeunload", () => {
   closeSocket();

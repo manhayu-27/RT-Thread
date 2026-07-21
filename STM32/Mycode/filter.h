@@ -7,7 +7,7 @@ extern "C" {
 
 #include <stdint.h>
 
-#define FILTER_SECTION_COUNT 4U
+#define FILTER_SECTION_COUNT 5U
 #define FILTER_CHANNEL_COUNT 4U
 
 void filter_init(void);
