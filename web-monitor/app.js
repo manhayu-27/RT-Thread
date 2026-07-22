@@ -52,6 +52,7 @@ const elements = {
   sampleCounter: $("#sampleCounter"),
   alarmBanner: $("#alarmBanner"),
   alarmText: $("#alarmText"),
+  aiProcessingOverlay: $("#aiProcessingOverlay"),
   toast: $("#toast"),
   tasksBody: $("#tasksBody"),
   emptyRecords: $("#emptyRecords"),
@@ -255,8 +256,8 @@ function flagMessages(flags) {
 function createAlarmMedia() {
   if (state.alarmMedia) return state.alarmMedia;
 
-  const sampleRate = 8000;
-  const seconds = 0.55;
+  const sampleRate = 16000;
+  const seconds = 1.05;
   const samples = Math.floor(sampleRate * seconds);
   const dataSize = samples * 2;
   const buffer = new ArrayBuffer(44 + dataSize);
@@ -280,8 +281,10 @@ function createAlarmMedia() {
 
   for (let i = 0; i < samples; i += 1) {
     const t = i / sampleRate;
-    const freq = t < 0.22 ? 980 : t < 0.32 ? 0 : 740;
-    const value = freq ? Math.sin(2 * Math.PI * freq * t) * 0.8 : 0;
+    const burst = (t < 0.18) || (t >= 0.28 && t < 0.46) || (t >= 0.56 && t < 0.74);
+    const freq = t < 0.46 ? 1480 : 1040;
+    const envelope = burst ? 0.94 * Math.min(1, ((t % 0.28) + 0.02) * 45) : 0;
+    const value = burst ? Math.sin(2 * Math.PI * freq * t) * envelope : 0;
     view.setInt16(44 + i * 2, Math.round(value * 32767), true);
   }
 
@@ -322,15 +325,15 @@ function playAlarmTone(frequency, startAt) {
   try {
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
-    oscillator.type = "square";
+    oscillator.type = "sawtooth";
     oscillator.frequency.setValueAtTime(frequency, startAt);
     gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(0.2, startAt + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.18);
+    gain.gain.exponentialRampToValueAtTime(0.45, startAt + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.22);
     oscillator.connect(gain);
     gain.connect(audio.destination);
     oscillator.start(startAt);
-    oscillator.stop(startAt + 0.2);
+    oscillator.stop(startAt + 0.24);
   } catch {
     // Audio can still be blocked by browser policy until user interaction.
   }
@@ -338,8 +341,14 @@ function playAlarmTone(frequency, startAt) {
 
 function playAlarmSound() {
   const now = Date.now();
-  if (now - state.lastAlarmSoundAt < 1200) return;
+  if (now - state.lastAlarmSoundAt < 1050) return;
   state.lastAlarmSoundAt = now;
+
+  // Android uses the dedicated alarm stream, which remains audible when WebView media is restricted.
+  if (window.AndroidHost?.playFallAlarm) {
+    window.AndroidHost.playFallAlarm();
+    return;
+  }
   unlockAlarmSound();
 
   const media = createAlarmMedia();
@@ -349,18 +358,20 @@ function playAlarmSound() {
 
   const audio = getAlarmAudio();
   if (!audio || audio.state !== "running") return;
-  playAlarmTone(880, audio.currentTime);
-  playAlarmTone(660, audio.currentTime + 0.24);
+  playAlarmTone(1480, audio.currentTime);
+  playAlarmTone(1480, audio.currentTime + 0.28);
+  playAlarmTone(1040, audio.currentTime + 0.56);
 }
 
 function updateAlarm(flags) {
-  if (!flags) {
+  const fallDetected = Boolean(flags & 128);
+  if (!fallDetected) {
     if (Date.now() >= state.alarmHoldUntil) elements.alarmBanner.classList.remove("show");
     return;
   }
   state.alarmHoldUntil = Date.now() + 5000;
   if (Date.now() - state.dismissedAlarmAt < 2500) return;
-  elements.alarmText.textContent = flagMessages(flags).join("、");
+  elements.alarmText.textContent = "检测到跌倒，请立即确认安全";
   elements.alarmBanner.classList.add("show");
   playAlarmSound();
 }
@@ -428,9 +439,8 @@ function addSample(values, sequence, timestampUs = Date.now() * 1000) {
   state.lastSampleAt = Date.now();
   document.body.classList.add("has-data");
 
-  if (state.sampleCount % 50 === 0) state.currentFlags = computeAlarmFlags(sample);
-  if (Math.abs(sample[0]) > state.settings.ecgLimit) state.currentFlags |= 4;
-  if (sample[7]) state.currentFlags |= 128; else state.currentFlags &= ~128;
+  // ECG/EMG 阈值只用于显示与 AI 观察，不再触发报警；仅由跌倒检测结果报警。
+  state.currentFlags = sample[7] ? 128 : 0;
   if (state.currentFlags) {
     if (state.currentFlags & 7) state.alarmMarkers.ecg.push(state.sampleCount);
     if (state.currentFlags & 8) state.alarmMarkers.emg1.push(state.sampleCount);
@@ -544,7 +554,7 @@ async function requestLiveAiSummary(context = buildRealtimeContext()) {
   if (state.liveAiBusy || Date.now() - state.lastAiSummaryAt < 45000) return;
   state.liveAiBusy = true;
   state.lastAiSummaryAt = Date.now();
-  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "AI 正在解读实时摘要…";
+  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "AI 正在生成实时简析…";
   if (window.AndroidHost?.requestRealtimeAi) {
     window.AndroidHost.requestRealtimeAi(JSON.stringify(context));
     return;
@@ -553,7 +563,7 @@ async function requestLiveAiSummary(context = buildRealtimeContext()) {
     const { summary } = await api("/api/ai/realtime", { method: "POST", body: JSON.stringify({ context }) });
     if (elements.liveAiSummary) elements.liveAiSummary.textContent = summary;
   } catch {
-    if (elements.liveAiSummary) elements.liveAiSummary.textContent = "本地摘要已就绪；配置 API 后可获得语义解读";
+    if (elements.liveAiSummary) elements.liveAiSummary.textContent = "实时数据已更新，等待 AI 简析。";
   } finally {
     state.liveAiBusy = false;
   }
@@ -566,7 +576,7 @@ window.onRealtimeAiSummary = (summary) => {
 
 window.onRealtimeAiError = () => {
   state.liveAiBusy = false;
-  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "本地摘要已就绪；配置 API 后可获得语义解读";
+  if (elements.liveAiSummary) elements.liveAiSummary.textContent = "实时数据已更新，等待 AI 简析。";
 };
 
 function parsePayload(payload) {
@@ -883,6 +893,8 @@ function setAiBusy(busy, label = "") {
   elements.generateReport.disabled = busy;
   elements.sendChat.disabled = busy;
   elements.aiTask.disabled = busy;
+  elements.aiProcessingOverlay?.classList.toggle("show", busy);
+  elements.aiProcessingOverlay?.setAttribute("aria-hidden", String(!busy));
   if (busy) {
     elements.aiStatus.textContent = label || "AI 正在生成，请稍候…";
     elements.aiStatus.classList.add("working");
@@ -895,7 +907,7 @@ function setAiBusy(busy, label = "") {
 function beginAiRequest(type, extra = {}) {
   const id = ++state.aiRequestId;
   state.pendingAiRequest = { id, type, ...extra };
-  setAiBusy(true, type === "report" ? "AI 正在整理完整报告…" : "AI 正在思考并生成回答…");
+  setAiBusy(true, type === "report" ? "AI 正在整理信号简析…" : "AI 正在生成回答…");
   return id;
 }
 
@@ -915,7 +927,7 @@ async function generateAiReport() {
     return;
   }
   const requestId = beginAiRequest("report");
-  elements.aiReport.textContent = "正在读取完整 CSV 并生成报告…";
+  elements.aiReport.textContent = "AI 正在读取采集统计并生成简析…";
   if (window.AndroidHost?.requestAiReport) {
     window.AndroidHost.requestAiReport(JSON.stringify({ requestId, taskId }));
     return;
@@ -947,7 +959,7 @@ async function sendAiMessage(event) {
   const message = elements.chatInput.value.trim();
   if (!message) return;
   elements.chatInput.value = "";
-  await askAi(message);
+  await askAi(message, Boolean(state.settings.aiVoiceEnabled));
 }
 
 async function askAi(message, speakAnswer = false) {

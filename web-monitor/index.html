@@ -165,18 +165,18 @@
 
         <section id="aiView" class="view">
           <div class="ai-intro">
-            <div><span class="section-kicker">DOUBAO AI ASSISTANT</span><h2>信号健康观察与语言聊天</h2><p>选择一次 ECG / EMG 采集任务，由豆包基于整份 CSV 的统计结果生成报告。</p></div>
+            <div><span class="section-kicker">DOUBAO AI ASSISTANT</span><h2>信号简析与语言聊天</h2><p>AI 基于实时数据和采集统计给出简短观察，不作医疗诊断。</p></div>
             <span class="ai-status" id="aiStatus">正在检查 API</span>
           </div>
           <label class="ai-task-select"><span>分析任务</span><select id="aiTask"><option value="">不附加信号任务</option></select></label>
           <div class="ai-grid">
             <section class="ai-card report-card">
-              <div class="ai-card-head"><div><span class="section-kicker">SIGNAL REPORT</span><h3>AI 健康观察报告</h3></div><button class="button primary" id="generateReport">生成报告</button></div>
-              <div class="ai-report" id="aiReport">选择一个已有采集任务，然后生成报告。</div>
+              <div class="ai-card-head"><div><span class="section-kicker">SIGNAL SUMMARY</span><h3>AI 信号简析</h3></div><button class="button primary" id="generateReport">生成简析</button></div>
+              <div class="ai-report" id="aiReport">选择一个已有采集任务，然后生成简短观察。</div>
             </section>
             <section class="ai-card chat-card">
               <div class="ai-card-head"><div><span class="section-kicker">LANGUAGE CHAT</span><h3>健康助手对话</h3></div><button class="mini-button" id="clearChat">清空</button></div>
-              <div class="chat-log" id="chatLog" aria-live="polite"><div class="chat-message assistant">你好，我可以解释 ECG / EMG 指标、采集质量和报告内容。选择任务后，我会在回答中参考该任务。</div></div>
+              <div class="chat-log" id="chatLog" aria-live="polite"><div class="chat-message assistant">你好，我可以基于当前信号做简短观察，不会进行医疗诊断。</div></div>
               <form class="chat-form" id="chatForm"><textarea id="chatInput" maxlength="2000" rows="2" placeholder="输入问题，例如：三路肌电信号有什么差异？" required></textarea><button class="button primary" type="submit" id="sendChat">发送</button></form>
             </section>
           </div>
@@ -207,6 +207,9 @@
     <button class="voice-orb" id="voiceOrb" type="button" aria-label="长按进行语音问答">
       <span class="voice-ring"></span><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8"/></svg><strong>长按问 AI</strong>
     </button>
+    <div class="ai-processing-overlay" id="aiProcessingOverlay" aria-live="polite" aria-hidden="true">
+      <div class="ai-processing-card"><span class="ai-processing-spinner"></span><strong>AI 正在生成</strong><span>正在读取信号上下文，请稍候…</span></div>
+    </div>
     <div class="toast" id="toast" role="status"></div>
     <script src="./app.js"></script>
   </body>

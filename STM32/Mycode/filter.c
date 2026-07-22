@@ -16,13 +16,13 @@ static float32_t filter_state[FILTER_CHANNEL_COUNT][2U * FILTER_SECTION_COUNT];
  */
 static const float32_t ecg_filter_coeffs[5U * FILTER_SECTION_COUNT] =
 {
-    /* 0.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 1. */
-    0.991824212000533f,  -1.983648424001066f,    0.991824212000533f,
-    1.988418017374658f,  -0.988457267818733f,
+    /* 2.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 1. */
+    0.959782230087239f,  -1.919564460174477f,    0.959782230087239f,
+    1.942638230540114f,  -0.943597278470367f,
 
-    /* 0.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 2. */
+    /* 2.5 Hz high-pass, Fs = 500 Hz, 4th-order Butterworth, section 2. */
     1.0f,                -2.0f,                  1.0f,
-    1.995163241283863f,  -0.995202624875511f,
+    1.975269634851873f,  -0.976244792359440f,
 
     /* 40 Hz low-pass, Fs = 500 Hz, 4th-order Butterworth, section 1. */
     0.002234891698082f,   0.004469783396165f,    0.002234891698082f,

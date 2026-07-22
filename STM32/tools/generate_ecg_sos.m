@@ -2,7 +2,7 @@ function generate_ecg_sos(outDir)
 %GENERATE_ECG_SOS Generate separated ECG IIR SOS coefficients for firmware.
 
 Fs = 500;
-highpassHz = 1.5;
+highpassHz = 2.5;
 lowpassHz = 35.0;
 notchHz = [48.0 49.0 50.0 51.0 52.0];
 notchQ = 5.0;

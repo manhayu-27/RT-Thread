@@ -1516,6 +1516,58 @@ dialog::backdrop {
   color: var(--green);
 }
 
+.ai-processing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(7, 36, 44, 0.42);
+  backdrop-filter: blur(5px);
+}
+
+.ai-processing-overlay.show {
+  display: flex;
+}
+
+.ai-processing-card {
+  display: grid;
+  min-width: min(300px, 100%);
+  justify-items: center;
+  gap: 9px;
+  padding: 28px 34px;
+  border: 1px solid color-mix(in srgb, var(--teal) 48%, white);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--surface) 96%, white);
+  box-shadow: 0 20px 55px rgba(2, 24, 29, 0.36);
+  color: var(--ink);
+  text-align: center;
+}
+
+.ai-processing-card strong {
+  font-size: 18px;
+}
+
+.ai-processing-card > span:last-child {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ai-processing-spinner {
+  width: 34px;
+  height: 34px;
+  border: 4px solid color-mix(in srgb, var(--teal) 18%, transparent);
+  border-top-color: var(--teal);
+  border-radius: 50%;
+  animation: ai-processing-spin 800ms linear infinite;
+}
+
+@keyframes ai-processing-spin {
+  to { transform: rotate(360deg); }
+}
+
 .voice-toggle {
   display: inline-flex;
   align-items: center;
