@@ -30,7 +30,7 @@ STORE_LOCK = threading.Lock()
 TASK_ID_RE = re.compile(r"^[0-9A-Za-z_-]+$")
 ARK_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
 DEFAULT_ARK_CHAT_MODEL = "doubao-seed-2-0-mini-260215"
-DEFAULT_ARK_REPORT_MODEL = "doubao-seed-2-1-pro-250528"
+DEFAULT_ARK_REPORT_MODEL = DEFAULT_ARK_CHAT_MODEL
 AI_SYSTEM_PROMPT = """你是 BioScope 设备的信号观察助手。只依据提供的数值、波形统计和姿态数据，
 给出2至4句简短、友好的工程观察。可以描述波形起伏、肌电相对活跃度、姿态变化和已触发的
 跌倒标志；数据不足时明确说明。严禁诊断、疾病名称、病因推测、健康结论、治疗、用药、康复
@@ -228,7 +228,7 @@ def summarize_task(task_id: str) -> dict:
 def ark_model(kind: str) -> str:
     """Return a locally configured Ark model without exposing the API key."""
     if kind == "report":
-        return (os.getenv("ARK_MODEL_REPORT", "").strip()
+        return (os.getenv("ARK_MODEL_CHAT", "").strip()
                 or os.getenv("ARK_MODEL", "").strip()
                 or DEFAULT_ARK_REPORT_MODEL)
     return (os.getenv("ARK_MODEL_CHAT", "").strip()

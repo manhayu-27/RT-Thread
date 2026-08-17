@@ -938,6 +938,7 @@ async function generateAiReport() {
       body: JSON.stringify({ taskId }),
     });
     elements.aiReport.textContent = report;
+    if (state.settings.aiVoiceEnabled) window.AndroidHost?.speak?.(report);
   } catch (error) {
     elements.aiReport.textContent = `报告生成失败：${error.message}`;
   } finally {
@@ -1017,7 +1018,9 @@ window.onAiChatError = (requestId, message) => {
 window.onAiReportResult = (requestId, report) => {
   const request = state.pendingAiRequest;
   if (!request || request.id !== Number(requestId) || request.type !== "report") return;
-  elements.aiReport.textContent = String(report || "报告内容为空");
+  const content = String(report || "报告内容为空");
+  elements.aiReport.textContent = content;
+  if (state.settings.aiVoiceEnabled) window.AndroidHost?.speak?.(content);
   endAiRequest(Number(requestId));
 };
 

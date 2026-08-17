@@ -123,7 +123,7 @@ void asrpro_uart_task()
     if (Serial.available() > 0) {
       handle_asrpro_frame(Serial.readStringUntil('\n'));
     }
-    if (query_pending && (uint32_t)(millis() - query_started_ms) > 1500U) {
+    if (query_pending && (uint32_t)(millis() - query_started_ms) > 3000U) {
       query_pending = false;
       enter_wakeup(10000);
       play_audio(10009);

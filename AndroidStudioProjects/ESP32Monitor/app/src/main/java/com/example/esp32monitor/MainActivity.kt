@@ -52,7 +52,9 @@ import android.widget.LinearLayout
 class MainActivity : ComponentActivity(), LocationListener {
     private companion object {
         const val ARK_CHAT_MODEL = "doubao-seed-2-0-mini-260215"
-        const val ARK_REPORT_MODEL = "doubao-seed-2-1-pro-250528"
+        // The previously configured 2.1-pro dated endpoint is not available to this Ark key.
+        // Reuse the enabled chat model so report generation and chat have the same availability.
+        const val ARK_REPORT_MODEL = ARK_CHAT_MODEL
         const val VOLC_TTS_URL = "https://openspeech.bytedance.com/api/v1/tts"
         const val DEFAULT_VOLC_TTS_VOICE = "zh_female_sajiaonvyou_moon_bigtts"
         const val AI_SYSTEM_PROMPT = "你是智能假肢设备的信号观察助手。只依据提供的数值、波形统计和姿态数据，给出2至4句简短、友好的工程观察。可以描述波形起伏、肌电相对活跃度、姿态变化和已触发的跌倒标志；数据不足时明确说明。严禁诊断、疾病名称、病因推测、健康结论、治疗、用药、康复处方、风险分级或恐吓性措辞；不要把一般信号波动说成异常。"

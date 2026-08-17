@@ -1008,6 +1008,7 @@ static void init_stm32_uart(void)
 static void asrpro_uart_send(const char *text)
 {
     if (text != NULL) {
+        printf("ASR,TX,%s", text);
         (void)uart_write_bytes(ASRPRO_UART, text, strlen(text));
     }
 }
@@ -1071,6 +1072,7 @@ static void asrpro_uart_task(void *arg)
                     line_length--;
                 }
                 line[line_length] = '\0';
+                printf("ASR,RX,%s\r\n", line);
                 asrpro_send_vitals(line);
                 line_length = 0U;
             } else if (line_length < sizeof(line) - 1U) {
